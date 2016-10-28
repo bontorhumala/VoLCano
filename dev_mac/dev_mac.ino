@@ -1,3 +1,5 @@
+#include <TimerOne.h>
+#include <QueueArray.h>
 #include <util/crc16.h>
 
 #define MAX_PACKET 256
@@ -14,66 +16,56 @@
 #define CW_DELAY 500
 #define PDU_TX 0
 #define PDU_RET 1
+#define TX_WAIT 0
+#define TX_SENT 1
+#define TX_FAIL 2
 #define MAX_RET 3
+#define MAC_CTRL_FREQ 10000 // mac control every 10 ms
+#define MAX_TX_QUEUE 100
 
-class volcanoMAC {
-    uint8_t mac_state;
-    uint8_t random_cw;
-    uint8_t i;
-    uint8_t addr;
-    bool b_medium_idle;
-    QueueArray <uint8_t> rx_queue;
-    QueueArray <uint8_t> rx_ack_queue;
-    QueueArray <uint8_t> tx_queue;
-    uint8_t[MAX_PACKET] re_tx_buffer; // retransmission data backup
-    QueueArray <uint8_t> tx_addr_queue;
-    QueueArray <uint16_t> tx_queue_len; // array of tx dataframe len
-    uint16_t re_tx_data_len; // retransmission length backup
-    uint8_t re_tx_addr; // retransmission address backup
-    uint8_t re_count;
-    bool is_ack_received;
-    
-    void _access_mac();
-    void _rx_mac();
-    void _calculate_fcs();
-    void _mac_idle();
-    void _mac_init_wait();
-    void _mac_random_cw();
-    void _mac_wait_cw();
-    void _mac_access();
-    void _mac_wait_ack(); // read phy
-    void _mac_fsm_control();        
-    uint16_t _calculate_fcs(uint8_t* data, uint8_t count);
-    uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type);
-    void _mac_create_ack(uint8_t mac_ack_pdu[], uint8_t ack_dest_addr, uint8_t first_byte);
-    void _mac_wait_ack();
-    void _mac_access();
-    void _mac_wait_cw();
-    void _mac_random_cw();
-    void _mac_init_wait();
-    void _mac_idle();
-    void _wait_cw_slot(uint8_t num_cw);
-    void _wait_ack_slot();
-    void _mac_read_packet();
-    void _mac_fsm_control();
-  public:
-    volcanoMAC(uint8_t mac_addr);
-    uint8_t mac_rx();
-    bool mac_tx();
-}
+uint8_t mac_rx();
+bool mac_tx();
 
-// Initialise MAC with a MAC address
-volcanoMAC::volcanoMAC (uint8_t mac_addr) {
-  addr = mac_addr;
-  mac_state = MAC_IDLE;
-  random_cw = 0;
-  // setup task library (TaskScheduler) to call mac_fsm_control() periodically
-  _mac_fsm_control();
-}
+struct Tx_State {
+  uint8_t state;
+  uint8_t msg_id;
+};
+
+Tx_State tx_state[MAX_TX_QUEUE]; // unused, will be used for async or event driven notification
+uint8_t mac_state;
+uint8_t random_cw;
+uint8_t i;
+uint8_t addr;
+bool b_medium_idle;
+QueueArray <uint8_t> rx_queue;
+QueueArray <uint16_t> rx_queue_len;
+QueueArray <uint8_t> rx_ack_queue;
+QueueArray <uint8_t> tx_queue;
+uint8_t re_tx_buffer[MAX_PACKET]; // retransmission data backup
+QueueArray <uint8_t> tx_addr_queue;
+QueueArray <uint16_t> tx_queue_len; // array of tx dataframe len
+uint16_t re_tx_data_len; // retransmission length backup
+uint8_t re_tx_addr; // retransmission address backup
+uint8_t re_count;
+bool is_ack_received;
+
+uint16_t _calculate_fcs(uint8_t* data, uint8_t count);
+uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type);
+void _mac_create_ack(uint8_t mac_ack_pdu[], uint8_t ack_dest_addr, uint8_t first_byte);
+void _mac_wait_ack();
+void _mac_access();
+void _mac_wait_cw();
+void _mac_random_cw();
+void _mac_init_wait();
+void _mac_idle();
+void _wait_cw_slot(uint8_t num_cw);
+void _wait_ack_slot();
+void _mac_read_packet();
+void _mac_fsm_control();
 
 // application layer uses this function to read out mac buffer
 // there could be multiple PDU in the rx_queue, this function will only return the first on the queue (FIFO)
-uint8_t volcanoMAC::mac_rx(uint8_t *data) {
+uint8_t mac_rx(uint8_t *data) {
   uint16_t count = 0;
   uint16_t rx_len = rx_queue_len.dequeue();
   do {
@@ -86,7 +78,7 @@ uint8_t volcanoMAC::mac_rx(uint8_t *data) {
 // application layer uses this function to fill mac buffer
 // transmission attempt is non blocking (i.e. can send several times without waiting)
 // maximum retries defined by MAX_RET
-bool volcanoMAC::mac_tx(uint8_t *data, uint8_t count, uint8_t dest_addr) {
+bool mac_tx(uint8_t *data, uint8_t count, uint8_t dest_addr) {
    if ((data == 0) || (count == 0)) {
      return false;
    } else {
@@ -111,10 +103,10 @@ void _mac_fsm_control() {
       _mac_init_wait();
       break;
     case MAC_RANDOM_CW:
-      _mac_cw();
+      _mac_random_cw();
       break;
     case MAC_WAIT_CW:
-      _mac_wait();
+      _mac_wait_cw();
       break;
     case MAC_ACCESS:
       _mac_access();
@@ -127,17 +119,16 @@ void _mac_fsm_control() {
 
 // read packet from PHY layer, can be ACK or data
 void _mac_read_packet() {
-  uint8_t[MAX_FRAME] mac_pdu;
-  uint8_t[ACK_FRAME] mac_ack_pdu;  
+  uint8_t mac_pdu[MAX_FRAME];
+  uint8_t mac_ack_pdu[ACK_FRAME];
   uint16_t data_len = 0;
   uint16_t fcs = 0;
   uint16_t i=0;
   data_len = phy_rx(mac_pdu);
   data_len = data_len - 7; // remove header and fcs
-  fcs = (mac_pdu[count-2]<<8) | mac_pdu[count-2];
-  if ((fcs == calculate_fcs(mac_pdu, 5+data_len)) && (mac_pdu[2] == addr)) {  
+  fcs = (mac_pdu[data_len-2]<<8) | mac_pdu[data_len-1]; // fcs are located at the end of mac_pdu
+  if ((fcs == _calculate_fcs(mac_pdu, 5+data_len)) && (mac_pdu[2] == addr)) {  
     if (data_len == 1) { // only 1 byte, must be ACK
-      rx_ack_queue_len++;
       rx_ack_queue.enqueue(mac_pdu[5]);
     } 
     else {// larger than 1 bytes, must be data
@@ -155,7 +146,7 @@ void _mac_read_packet() {
 
 void _wait_ack_slot() {
   uint8_t slot_counter=0;
-  while (cw_slot_counter < 4) {
+  while (slot_counter < 4) {
     delayMicroseconds(CW_DELAY);
     slot_counter++;
   }
@@ -185,7 +176,7 @@ void _mac_idle() {
 }
 
 void _mac_init_wait(){
-  _wait_one_cw_slot(1);
+  _wait_cw_slot(1);
   mac_state = MAC_RANDOM_CW;
 }
 
@@ -216,7 +207,7 @@ void _mac_wait_cw() {
 
 // send data to phy layer, either original transmission (PDU_TX) or retransmission (PDU_RET)
 void _mac_access() {
-  uint8_t[MAX_FRAME] mac_pdu;
+  uint8_t mac_pdu[MAX_FRAME];
   bool is_retx = false;
   uint16_t data_len;
   if (re_count == 0) { // first transmission attempt
@@ -254,11 +245,11 @@ void _mac_create_ack(uint8_t mac_ack_pdu[], uint8_t ack_dest_addr, uint8_t first
   
   mac_ack_pdu[0] = HEADER;
   mac_ack_pdu[1] = addr;
-  mac_ack_pdu[2] = ack_dest_adr
-  mac_ack_pdu[3] = 0x00
+  mac_ack_pdu[2] = ack_dest_addr;
+  mac_ack_pdu[3] = 0x00;
   mac_ack_pdu[4] = ACK_FRAME;
   mac_ack_pdu[5] = messageID;
-  fcs = calculate_fcs(mac_ack_pdu, ACK_FRAME);
+  fcs = _calculate_fcs(mac_ack_pdu, ACK_FRAME);
   mac_ack_pdu[6] = (fcs >> 8) & 0xFF;
   mac_ack_pdu[7] = fcs & 0xFF;
 }
@@ -296,12 +287,12 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
         data_len--;
       }
       break;
-    case default:
+    default:
       re_tx_data_len = 0;
       break;
   }
  
-  fcs = calculate_fcs(mac_pdu, 5+re_tx_data_len);
+  fcs = _calculate_fcs(mac_pdu, 5+re_tx_data_len);
   mac_pdu[4+i] = (fcs >> 8) & 0xFF;
   mac_pdu[4+i+1] = fcs & 0xFF;
 
@@ -323,3 +314,16 @@ uint16_t _calculate_fcs(uint8_t* data, uint8_t count)
   return result;
 }
 
+void setup() {
+  addr = 0x77;
+  mac_state = MAC_IDLE;
+  random_cw = 0;
+  
+  Timer1.initialize(MAC_CTRL_FREQ);
+  Timer1.attachInterrupt(_mac_fsm_control);
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+
+}
