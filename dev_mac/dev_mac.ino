@@ -144,6 +144,7 @@ void _mac_read_packet() {
   }
 }
 
+// wait for 4 slots
 void _wait_ack_slot() {
   uint8_t slot_counter=0;
   while (slot_counter < 4) {
@@ -152,6 +153,7 @@ void _wait_ack_slot() {
   }
 }
 
+// wait for 16 slots * num_cw
 void _wait_cw_slot(uint8_t num_cw) {
   uint8_t cw_slot_counter=0;
   uint8_t cw_counter=0;
@@ -164,22 +166,24 @@ void _wait_cw_slot(uint8_t num_cw) {
     cw_counter++;
   }
 }
-
+ 
 void _mac_idle() {
   // check if medium is idle
   b_medium_idle = phy_sense();
-  if (b_medium_idle && (!tx_queue.isEmpty())) {
+  if (b_medium_idle && (!tx_queue.isEmpty())) { // send if tx_queue is not empty
     mac_state = MAC_INIT_WAIT;
   } else {
     mac_state = MAC_IDLE;
   }
 }
 
+// SFD or initial wait
 void _mac_init_wait(){
   _wait_cw_slot(1);
   mac_state = MAC_RANDOM_CW;
 }
 
+// get random contention window
 void _mac_random_cw() {
   random_cw = random(0, 16); 
   mac_state = MAC_WAIT_CW;
@@ -189,16 +193,16 @@ void _mac_random_cw() {
 void _mac_wait_cw() {
   i = 0;
   b_medium_idle = true;
-  if ((i<=random_cw) && b_medium_idle ){
+  if ((i<=random_cw) && b_medium_idle ){ // medium has to be idle to increment cw counter
     b_medium_idle = phy_sense();
     if (b_medium_idle) {
       _wait_cw_slot(1);
       i++;
-    } else {
+    } else { // if medium is not idle, go back to random_cw calculation state
       mac_state = MAC_RANDOM_CW;
     }
   }
-  if (i == random_cw) {
+  if (i == random_cw) {  // random_cw is reached
     re_count = 0;
     is_ack_received = false;
     mac_state = MAC_ACCESS;
@@ -265,13 +269,13 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
   mac_pdu[1] = addr;
   mac_pdu[3] = 0x00; // RESERVED
   
-  switch(tx_type) {
+  switch(tx_type) { // different PDU for transmission and retransmission
     case PDU_TX:
-      mac_pdu[2] = tx_addr_queue.dequeue();
-      re_tx_addr = mac_pdu[2];
-      mac_pdu[4] = tx_queue_len.dequeue();
-      re_tx_data_len = data_len = mac_pdu[4]; // retransmission backup and iterator
-      while (data_len) {
+      mac_pdu[2] = tx_addr_queue.dequeue(); // destination address
+      re_tx_addr = mac_pdu[2]; // retransmission address backup
+      mac_pdu[4] = tx_queue_len.dequeue(); // NAV or data length
+      re_tx_data_len = data_len = mac_pdu[4]; // retransmission data length backup and iterator
+      while (data_len) { // extract mac_pdu from tx_queue
         mac_pdu[i+5] = tx_queue.dequeue();
         re_tx_buffer[i] = mac_pdu[i+5]; // retransmission backup
         i++;
@@ -279,9 +283,9 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
       }
       break;
     case PDU_RET:
-      mac_pdu[2] = re_tx_addr;
-      data_len = mac_pdu[4] = re_tx_data_len; // NAV      
-      while (data_len) {
+      mac_pdu[2] = re_tx_addr; // destination address
+      data_len = mac_pdu[4] = re_tx_data_len; // NAV or data length 
+      while (data_len) { // extract mac_pdu from tx_queue
         mac_pdu[i+5] = re_tx_buffer[i];
         i++;
         data_len--;
@@ -290,12 +294,10 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
     default:
       re_tx_data_len = 0;
       break;
-  }
- 
+  } 
   fcs = _calculate_fcs(mac_pdu, 5+re_tx_data_len);
   mac_pdu[4+i] = (fcs >> 8) & 0xFF;
   mac_pdu[4+i+1] = fcs & 0xFF;
-
   return re_tx_data_len;
 }
 
@@ -304,9 +306,7 @@ uint16_t _calculate_fcs(uint8_t* data, uint8_t count)
 {
   uint16_t result;
   result = 0;
-
-  while ( count > 0 )
-  {
+  while ( count > 0 ) {
     result = _crc16_update ( result, *data );
     ++data;
     --count;
