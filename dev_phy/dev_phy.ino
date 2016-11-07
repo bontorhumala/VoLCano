@@ -151,7 +151,7 @@ uint8_t _phy_idle() {
   if (tx_len > 0) { // check tx buffer
     phy_state = PHY_TX_RX;
   }
-  // wait for 0xFF
+  // wait for 0xFF, how to separate idle and tx?
 }
 
 // decode rx signal
