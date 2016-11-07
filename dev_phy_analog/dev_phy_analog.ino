@@ -37,15 +37,22 @@ uint8_t decode_iter;
 uint16_t sampling_buffer[PULSE_WINDOW_LEN];
 uint8_t pulse_iter;
 uint8_t max_pulse_len;
+// update encoding buffer every 2*pulse period
+uint8_t tx_encode_iter;
+uint8_t max_tx_encode_len;
 // safe idle pulse period
 uint8_t idle_counter;
 // time of last detected edge
 unsigned long prev_edge;
+uint8_t phy_state;
+
+uint8_t tx_pin;
+uint8_t rx_pin;
 
 // PUBLIC
 bool phy_sense();
-uint8_t phy_rx(uint8_t *data);
-bool phy_tx(uint8_t *data, uint8_t count);
+int8_t phy_rx(uint8_t *data);
+void phy_tx(uint8_t *data, uint8_t count);
 
 // PRIVATE
 void _phy_update();
@@ -57,13 +64,15 @@ void _encode_zero();
 void _encode_one();
 void _encode_idle();
 int8_t _detect_edge();
-uint16_t _get_min(uint8_t *arr, uint8_t len)
-uint16_t _get_max(uint8_t *arr, uint8_t len)
+uint16_t _get_min(uint8_t *arr, uint8_t len);
+uint16_t _get_max(uint8_t *arr, uint8_t len);
 uint8_t _bits_byte(uint8_t *bits);
 
 void setup() {
   // put your setup code here, to run once:
   phy_state = PHY_IDLE;
+  tx_pin = A1;
+  rx_pin = A0;
   pinMode(tx_pin, OUTPUT);
   digitalWrite(tx_pin, HIGH);
   rx_iter = 0;
@@ -132,7 +141,7 @@ void _phy_update() {
 
 // if find an edge, go to rx
 // if there is something to send, go to tx
-uint8_t _phy_idle() {
+void _phy_idle() {
   rx_iter = 0;
   _encode_idle();
   uint8_t in_bit;
@@ -152,7 +161,8 @@ uint8_t _phy_idle() {
 
 // update rx_buffer and increment rx_iter
 // rx_len is in dataframe[4]
-uint8_t _phy_rx() {
+void _phy_rx() {
+  uint8_t in_bit;
   in_bit = _detect_edge();
   if (in_bit > -1) { // check incoming bit
     decode_buffer[decode_iter & 0x01] = in_bit;
@@ -180,8 +190,8 @@ uint8_t _phy_rx() {
 
 // update encode_buffer and increment tx_iter
 // meanwhile, still receive data (full duplex)
-uint8_t _phy_tx_rx() {
-  tx_encode_iter++
+void _phy_tx_rx() {
+  tx_encode_iter++;
   if (tx_encode_iter == max_tx_encode_len) { // need to update encode_buffer after 2 pulse
     tx_encode_iter = 0;
     if (tx_buffer[tx_iter] == 0) { // transmit according to tx_buffer
@@ -242,7 +252,7 @@ int8_t _detect_edge() {
   uint16_t max_sample = _get_max(sampling_buffer, PHY_PULSE_PERIOD);
   uint16_t min_sample = _get_min(sampling_buffer, PHY_PULSE_PERIOD);  
   if ((max_sample-min_sample) > EDGE_THRESHOLD) { // the range is big, must have been an edge
-    if ((micros()-prev_edge) > PHY_PULSE_PERIOD) { // no edge in vicinity, must be considered
+    if ((micros()-prev_edge) > PHY_PULSE_PERIOD) { // no edge in vicinity, must be representing a bit
       if ((sampling_buffer[PULSE_WINDOW_LEN-1]-sampling_buffer[0]) < 0) { // falling edge, buffer 0-th is larger
         in_bit = 0;
       } else {
@@ -255,7 +265,7 @@ int8_t _detect_edge() {
 }
 
 // get maximum value in an array
-uint16_t _get_max(uint8_t *arr, uint8_t len) {
+uint16_t _get_max(uint16_t *arr, uint8_t len) {
   uint16_t max_val = 0;
   for (uint8_t i=0; i<len; i++) {
     if (arr[i]>max_val) {
@@ -266,7 +276,7 @@ uint16_t _get_max(uint8_t *arr, uint8_t len) {
 }
 
 // get minimum value in an array
-uint16_t _get_min(uint8_t *arr, uint8_t len) {
+uint16_t _get_min(uint16_t *arr, uint8_t len) {
   uint16_t min_val = 9999;
   for (uint8_t i=0; i<len; i++) {
     if (arr[i]<min_val) {
