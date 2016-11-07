@@ -1,4 +1,5 @@
-#include <TimerOne.h>
+#include <TimerThree.h>
+
 #include <QueueArray.h>
 #include <util/crc16.h>
 
@@ -48,6 +49,7 @@ uint16_t re_tx_data_len; // retransmission length backup
 uint8_t re_tx_addr; // retransmission address backup
 uint8_t re_count;
 bool is_ack_received;
+Timer t; //instantiate the timer object
 
 uint16_t _calculate_fcs(uint8_t* data, uint8_t count);
 uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type);
@@ -62,6 +64,20 @@ void _wait_cw_slot(uint8_t num_cw);
 void _wait_ack_slot();
 void _mac_read_packet();
 void _mac_fsm_control();
+
+void setup() {
+  addr = 0x77;
+  mac_state = MAC_IDLE;
+  random_cw = 0;
+  
+  Timer3.initialize(MAC_CTRL_FREQ);
+  Timer3.attachInterrupt(_mac_fsm_control);
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+
+}
 
 // application layer uses this function to read out mac buffer
 // there could be multiple PDU in the rx_queue, this function will only return the first on the queue (FIFO)
@@ -312,18 +328,4 @@ uint16_t _calculate_fcs(uint8_t* data, uint8_t count)
     --count;
   }
   return result;
-}
-
-void setup() {
-  addr = 0x77;
-  mac_state = MAC_IDLE;
-  random_cw = 0;
-  
-  Timer1.initialize(MAC_CTRL_FREQ);
-  Timer1.attachInterrupt(_mac_fsm_control);
-}
-
-void loop() {
-  // put your main code here, to run repeatedly:
-
 }
