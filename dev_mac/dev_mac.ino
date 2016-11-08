@@ -1,11 +1,20 @@
-#include <TimerThree.h>
+// By Bontor Humala
+// MAC layer of Volcano
+// LOG
+// 10/31
+//   (?) initial version, use QueueArray for rx and tx buffer
+// 11/8
+//   (?) use https://github.com/JChristensen/Timer library to update FSM
 
+#include <Event.h>
+#include <Timer.h>
 #include <QueueArray.h>
 #include <util/crc16.h>
 
 #define MAX_PACKET 256
 #define MAX_FRAME 263 // 5+MAX_PACKET+2
 #define ACK_FRAME 8 // 5+1+2
+#define MAX_QUEUE 3
 #define HEADER 0xFF
 #define MAC_IDLE 0
 #define MAC_INIT_WAIT 1
@@ -21,12 +30,15 @@
 #define TX_SENT 1
 #define TX_FAIL 2
 #define MAX_RET 3
-#define MAC_CTRL_FREQ 10000 // mac control every 10 ms
+#define MAC_CTRL_FREQ 10 // mac control every 10 ms
 #define MAX_TX_QUEUE 100
 
+// PUBLIC
+uint8_t mac_update(); // IMPORTANT: if MAC class is used in application, this needs to be called from loop(). Otherwise, state machine wont run
 uint8_t mac_rx();
 bool mac_tx();
 
+// PRIVATE
 struct Tx_State {
   uint8_t state;
   uint8_t msg_id;
@@ -70,13 +82,16 @@ void setup() {
   mac_state = MAC_IDLE;
   random_cw = 0;
   
-  Timer3.initialize(MAC_CTRL_FREQ);
-  Timer3.attachInterrupt(_mac_fsm_control);
+  t.every(MAC_CTRL_FREQ, _mac_fsm_control);
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
+  t.update();
+}
 
+uint8_t mac_update() {
+  t.update();
 }
 
 // application layer uses this function to read out mac buffer

@@ -1,11 +1,13 @@
 // By Bontor Humala
 // PHY layer of Volcano, default is off (idle)
 // LOG
+// 11/7
+//   (?) initial version, use ADC to sample
 // 11/8
-//   initial version, use ADC to sample
-// 11/9
-//   if rx_len is wrong (corrupt due to missed edge detection), returns to idle state
-//   fix moving window, previously all data are discarded once buffer is full. needs FIFO buffer
+//   (?) if rx_len is wrong (corrupt due to missed edge detection), returns to idle state
+//   (?) fix moving window, previously all data are discarded once buffer is full. needs FIFO buffer
+//   (-) adapt threshold
+
 #include <TimerOne.h>
 
 #define PHY_IDLE 0
