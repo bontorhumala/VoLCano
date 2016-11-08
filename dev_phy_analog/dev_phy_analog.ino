@@ -10,6 +10,9 @@
 
 #include <TimerOne.h>
 
+#define RX_NODE
+#define TX_NODE
+
 #define PHY_IDLE 0
 #define PHY_RX 1
 #define PHY_TX_RX 2
@@ -58,7 +61,7 @@ uint8_t rx_pin;
 
 // PUBLIC
 bool phy_sense();
-int8_t phy_rx(uint8_t *data);
+int16_t phy_rx(uint8_t *data);
 void phy_tx(uint8_t *data, uint8_t count);
 
 // PRIVATE
@@ -75,6 +78,13 @@ uint16_t _get_min(uint8_t *arr, uint8_t len);
 uint16_t _get_max(uint8_t *arr, uint8_t len);
 uint8_t _bits_byte(uint8_t *bits);
 void _push_sampling_buffer(uint16_t data);
+
+#ifdef RX_NODE // address is 0x88
+uint8_t test_rx[11];
+#endif
+#ifdef TX_NODE // address is 0x77
+uint8_t test_tx[11] = {0xFF,0x77,0x88,0,11,'b','o','n','t','o','r'};
+#endif
 
 void setup() {
   // put your setup code here, to run once:
@@ -97,11 +107,28 @@ void setup() {
   no_edge_count = 0;
   Timer1.initialize(PHY_SAMPLE_PERIOD);
   Timer1.attachInterrupt(_phy_fsm_control, PHY_SAMPLE_PERIOD);
+
+#ifdef RX_NODE
+  int16_t test_rx_size = 0;
+  do {
+    test_rx_size = phy_rx(test_rx);
+    if (test_rx_size > -1) {
+      printf("rx: \n");
+      for (int i=0; i<test_rx_size; i++) {
+        printf("%c", test_rx[i]);
+      }
+      printf("\nfinished rx \n");  
+    }
+  } while (test_rx_size == -1);
+#endif
+#ifdef TX_NODE
+  phy_tx(test_tx, 11);
+#endif
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
-
+  
 }
 
 // returns true if medium is idle, false otherwise
@@ -115,7 +142,7 @@ bool phy_sense() {
 
 // data will be filled with received frame
 // must be read before being overwritten (rx_iter larger than MAX_PHY_BUFFER)
-int8_t phy_rx(uint8_t *data) {
+int16_t phy_rx(uint8_t *data) {
   if ((rx_iter != 0) || (rx_len == 0)) { // rx_iter is not finished yet OR rx_len is not updated
     return -1;
   }
