@@ -1,21 +1,25 @@
 // By Bontor Humala
 // PHY layer of Volcano, default is off (idle)
-// Log:
-// - initial version, use ADC to sample
-
+// LOG
+// 11/8
+//   initial version, use ADC to sample
+// 11/9
+//   if rx_len is wrong (corrupt due to missed edge detection), returns to idle state
+//   fix moving window, previously all data are discarded once buffer is full. needs FIFO buffer
 #include <TimerOne.h>
 
 #define PHY_IDLE 0
 #define PHY_RX 1
 #define PHY_TX_RX 2
 #define PHY_SAMPLE_PERIOD 200 // phy sensing (sampling) period
-#define PHY_PULSE_PERIOD 1000 // pulse width as well
-#define PHY_SAFE_IDLE 5*PHY_PULSE_PERIOD // minimum idle pulse period to ensure it is safe to transmit
+#define PHY_PULSE_WIDTH 1000 // pulse width
+#define PHY_SAFE_IDLE 5*PHY_PULSE_WIDTH // minimum idle pulse period to ensure it is safe to transmit
 #define MAX_PHY_BUFFER 263 // 263 (maximum MAC packet), assume no additional PHY bytes
 #define ACK_PHY_BUFFER 8 // 8 (ACK in MAC), assume no additional PHY bytes
 #define BIT_LEN 2
 #define BYTE_LEN 8
-#define PULSE_WINDOW_LEN (PHY_PULSE_PERIOD/PHY_SAMPLE_PERIOD) // sampling window size, also used to indicate new pulse
+#define PULSE_LEN (PHY_PULSE_WIDTH/PHY_SAMPLE_PERIOD) // pulse window size, also used to indicate new pulse
+#define PERIOD_LEN (BIT_LEN*PULSE_LEN) // ppm window size (2 consecutive pulse)
 #define EDGE_THRESHOLD 100 // minimum range in PULSE_WINDOW_LEN to be considered an edge 
 
 // rx tx buffer and iterator
@@ -34,17 +38,18 @@ uint8_t decode_buffer[BYTE_LEN];
 uint8_t decode_iter;
 // update sampling_buffer every PHY_SAMPLE_PERIOD
 // update tx pin every pulse period
-uint16_t sampling_buffer[PULSE_WINDOW_LEN];
+uint16_t sampling_buffer[PULSE_LEN];
+uint8_t sampling_iter;
 uint8_t pulse_iter;
-uint8_t max_pulse_len;
 // update encoding buffer every 2*pulse period
-uint8_t tx_encode_iter;
-uint8_t max_tx_encode_len;
+uint8_t period_iter;
 // safe idle pulse period
 uint8_t idle_counter;
 // time of last detected edge
 unsigned long prev_edge;
 uint8_t phy_state;
+// no edge counter
+uint8_t no_edge_count;
 
 uint8_t tx_pin;
 uint8_t rx_pin;
@@ -67,6 +72,7 @@ int8_t _detect_edge();
 uint16_t _get_min(uint8_t *arr, uint8_t len);
 uint16_t _get_max(uint8_t *arr, uint8_t len);
 uint8_t _bits_byte(uint8_t *bits);
+void _push_sampling_buffer(uint16_t data);
 
 void setup() {
   // put your setup code here, to run once:
@@ -82,11 +88,11 @@ void setup() {
   encode_iter = 0; // alternated between 0 and 1, over encode_buffer
   decode_iter = 0; // alternated between 0 and 1, over decode_buffer
   pulse_iter = 0; // counts until PULSE_WINDOW_LEN to update tx output
-  tx_encode_iter = 0; // counts until 2*PULSE_WINDOW_LEN to update encode_buffer
-  max_pulse_len = PULSE_WINDOW_LEN; // update tx pin and detect adge
-  max_tx_encode_len = BIT_LEN*PULSE_WINDOW_LEN; // update encode_buffer
+  sampling_iter = 0;
+  period_iter = 0; // counts until 2*PULSE_WINDOW_LEN to update encode_buffer
   idle_counter = 0;
   prev_edge = 0;
+  no_edge_count = 0;
   Timer1.initialize(PHY_SAMPLE_PERIOD);
   Timer1.attachInterrupt(_phy_fsm_control, PHY_SAMPLE_PERIOD);
 }
@@ -127,9 +133,9 @@ void phy_tx(uint8_t *data, uint8_t count) {
 // sample rx pin every PHY_SAMPLE_PERIOD
 // update tx pin every PULSE_WINDOW_LEN
 void _phy_update() {
-  sampling_buffer[pulse_iter] = analogRead(rx_pin); // sample rx_pin
+  _push_sampling_buffer(analogRead(rx_pin)); // sample rx_pin
   pulse_iter++;
-  if (pulse_iter == max_pulse_len) { // update tx_pin
+  if (pulse_iter == PULSE_LEN) { // update tx_pin
     digitalWrite(tx_pin, encode_buffer[encode_iter & 0x01]);
     encode_iter++;
     pulse_iter = 0;
@@ -152,6 +158,7 @@ void _phy_idle() {
     idle_counter = 0; // reset idle_counter to hold back transmission
     rx_len = 0; // reset rx_buffer
     phy_state = PHY_RX;
+    no_edge_count = 0;
   }
   if ((idle_counter > PHY_SAFE_IDLE) && (tx_len > 0)) { // check tx buffer and ensure safe to send
     tx_iter = 0;
@@ -168,7 +175,9 @@ void _phy_rx() {
     decode_buffer[decode_iter & 0x01] = in_bit;
     decode_iter++;
     idle_counter = 0; // reset idle_counter to hold back transmission
-    phy_state = PHY_RX;
+    no_edge_count = 0;
+  } else {
+    no_edge_count++;
   }
   if (decode_iter == BYTE_LEN) {
     rx_buffer[rx_iter] = _bits_byte(decode_buffer);
@@ -185,15 +194,18 @@ void _phy_rx() {
       phy_state = PHY_IDLE;
     }
   }
+  if (no_edge_count > PERIOD_LEN) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
+    phy_state = PHY_IDLE;  
+  }
   rx_iter++;
 }
 
 // update encode_buffer and increment tx_iter
 // meanwhile, still receive data (full duplex)
 void _phy_tx_rx() {
-  tx_encode_iter++;
-  if (tx_encode_iter == max_tx_encode_len) { // need to update encode_buffer after 2 pulse
-    tx_encode_iter = 0;
+  period_iter++;
+  if (period_iter == PERIOD_LEN) { // need to update encode_buffer after 2 pulse
+    period_iter = 0;
     if (tx_buffer[tx_iter] == 0) { // transmit according to tx_buffer
       _encode_zero();
     } else {
@@ -243,17 +255,17 @@ void _encode_zero() {
   encode_buffer[1] = LOW;
 }
 
-// detect rising (1) or falling (0) edge
+// detect rising (1) or falling (0) edge using range in the sampling_buffer
 // avoid transistional edge between two consecutive identical bit: 
 //   i.e. 00: HIGH (falling) LOW (rising) HIGH (falling) LOW -> falling, falling
-//   ensure that the edge is detected after one PHY_PULSE_PERIOD
+//   ensure that the edge is detected after one PHY_PULSE_WIDTH
 int8_t _detect_edge() {
   int8_t in_bit = -1;
-  uint16_t max_sample = _get_max(sampling_buffer, PHY_PULSE_PERIOD);
-  uint16_t min_sample = _get_min(sampling_buffer, PHY_PULSE_PERIOD);  
+  uint16_t max_sample = _get_max(sampling_buffer, PULSE_LEN);
+  uint16_t min_sample = _get_min(sampling_buffer, PULSE_LEN);  
   if ((max_sample-min_sample) > EDGE_THRESHOLD) { // the range is big, must have been an edge
-    if ((micros()-prev_edge) > PHY_PULSE_PERIOD) { // no edge in vicinity, must be representing a bit
-      if ((sampling_buffer[PULSE_WINDOW_LEN-1]-sampling_buffer[0]) < 0) { // falling edge, buffer 0-th is larger
+    if ((micros()-prev_edge) > PHY_PULSE_WIDTH) { // no edge in vicinity, must be representing a bit
+      if ((sampling_buffer[PULSE_LEN-1]-sampling_buffer[0]) < 0) { // falling edge, buffer 0-th is larger
         in_bit = 0;
       } else {
         in_bit = 1;
@@ -294,5 +306,17 @@ uint8_t _bits_byte(uint8_t *bits) {
     sum += bits[i] << i;
   }
   return sum;
+}
 
+// FIFO buffer push implementation for sampling_buffer
+void _push_sampling_buffer(uint16_t data) {
+  if (pulse_iter == PULSE_LEN-1) {
+    for (uint8_t i=0; i<PULSE_LEN-1; i++) {  // kick earlist sample at index 0 and shift the remaining
+      sampling_buffer[i] = sampling_buffer[i+1];
+    }
+    sampling_buffer[PULSE_LEN-1] = data; // add new data to last position in the buffer
+  } else {
+    sampling_buffer[sampling_iter] = data;
+    sampling_iter++;
+  }
 }
