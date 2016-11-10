@@ -17,10 +17,10 @@
 #include <stdint.h>
 
 #define DEBUG
-#define DEBUG_RX
+//#define DEBUG_RX
 //#define DEBUG_TX
-#define RX_NODE
-//#define TX_NODE
+//#define RX_NODE
+#define TX_NODE
 
 #define PHY_IDLE 0
 #define PHY_RX 1
@@ -28,7 +28,7 @@
 #define PHY_PREAMBLE_RX 3
 #define PHY_PREAMBLE_TX 4
 #define PHY_SAMPLE_PERIOD 500 // phy sensing (sampling) period
-#define PHY_PULSE_WIDTH 2500 // pulse width
+#define PHY_PULSE_WIDTH 5000 // pulse width
 #define TIMER2COUNT 192 // Timer2 runs at 16MHz, in order to interrupt every 500us -> count 63x
 #define PHY_SAFE_IDLE 5*PERIOD_LEN // minimum idle pulse period to ensure it is safe to transmit
 #define MAX_PHY_BUFFER 263 // 263 (maximum MAC packet), assume no additional PHY bytes
@@ -433,7 +433,7 @@ int8_t _detect_edge() {
     for (uint8_t j = 0; j < PULSE_LEN; j++) {
       Serial.print(sampling_buffer[j]); Serial.print(", ");
     }
-//    Serial.print("\nde: "); Serial.println(in_bit);
+    Serial.print("\nde: "); Serial.println(in_bit);
   }
   else {
     Serial.print(in_bit);
