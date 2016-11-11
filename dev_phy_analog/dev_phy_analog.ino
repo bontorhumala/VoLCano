@@ -43,6 +43,7 @@
 #define NO_EDGE_PERIOD_LEN 2*PERIOD_LEN // maximum no edge is 2*period
 #define EDGE_THRESHOLD 10 // minimum range in PULSE_WINDOW_LEN to be considered an edge 
 #define NEG_EDGE_THRESHOLD -10
+#define MID_BIT (PULSE_LEN>>1)
 
 // rx tx buffer and iterator
 uint8_t rx_buffer[MAX_PHY_BUFFER];
@@ -189,7 +190,7 @@ void _phy_update() {
   _push_sampling_buffer(analogRead(rx_pin)); // sample rx_pin
   if (pulse_iter == 0) { // update tx_pin
 #ifdef DEBUG_TX
-//    Serial.print("ei: "); Serial.print(encode_iter & 0x01);Serial.print(", tx: "); Serial.println(encode_buffer[encode_iter & 0x01]);
+    Serial.print("eb0: "); Serial.print(encode_buffer[0]);Serial.print("eb1: "); Serial.print(encode_buffer[1]);Serial.print("ei: ");Serial.print(encode_iter & 0x01);Serial.print(", tx: "); Serial.println(encode_buffer[encode_iter & 0x01]);
 #endif
     digitalWrite(tx_pin, encode_buffer[encode_iter & 0x01]);
     encode_iter++;
@@ -214,7 +215,6 @@ void _phy_idle() {
     return;
   }
   if ((idle_counter > PHY_SAFE_IDLE) && (tx_len > 0) && (pulse_iter == PULSE_LEN)) { // check tx buffer and ensure safe to send
-    tx_iter = 0;
     encode_iter = 0;
     Serial.println("PRE_TX");
     phy_state = PHY_PREAMBLE_TX;
@@ -331,9 +331,9 @@ void _phy_preamble_tx() {
   }
   if (preamble_iter == PREAMBLE_LEN) { // preamble finished
     preamble_iter = 0;
-#ifdef DEBUG_TX
+    tx_iter = 0;
+    encode_iter = 0;
     Serial.println("TX_RX");
-#endif
     phy_state = PHY_TX_RX;
   }
 }
@@ -357,11 +357,10 @@ void _phy_tx_rx() {
       tx_iter++;
     }
     if (tx_bits_buffer[tx_bits_iter] == 0) { // transmit according to tx_buffer
-//      _encode_zero();
+      _encode_zero();
     } else {
-//      _encode_one();
+      _encode_one();
     }
-    _encode_idle();
     tx_bits_iter++;
     if (tx_bits_iter == BYTE_LEN) { // restart after transmit one byte
       tx_bits_iter = 0;
@@ -419,19 +418,19 @@ void _encode_zero() {
 //   ensure that the edge is detected after one PHY_PULSE_WIDTH
 int8_t _detect_edge() {
   int8_t in_bit = -1;
-  int sample_diff = sampling_buffer[2] - sampling_buffer[1];
+  int sample_diff = sampling_buffer[MID_BIT] - sampling_buffer[MID_BIT-1];
   if (sample_diff < NEG_EDGE_THRESHOLD) { // falling edge
-    if (no_edge_count >= (PULSE_LEN>>1)) { // no edge in vicinity (i.e. not a repetition or transition)
+    if (no_edge_count >= 1) { // no edge in vicinity (i.e. not a repetition or transition)
       in_bit = 0;
       no_edge_count = 0;
     }
   } else if (sample_diff > EDGE_THRESHOLD) { // positive edge
-    if (no_edge_count >= (PULSE_LEN>>1)) {
+    if (no_edge_count >= 1) {
       in_bit = 1;
       no_edge_count = 0;
     }
   }
-#ifdef DEBUG_RX_DETECT
+#ifdef DEBUG_RX
   if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
     Serial.print("sb: ");
     for (uint8_t j = 0; j < PULSE_LEN; j++) {
