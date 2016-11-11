@@ -13,14 +13,16 @@
 //   (ok) adding preamble 01..01, according to PREAMBLE_LEN
 //   (ok) fix edge detection, previously assigning in_bit always 1 because variable is uint (never negative thus never 0)
 //   (ok) fix edge detection, edge is only considered if 0-th bit and PULSE_LEN-th bit exceeds EDGE_THRESHOLD
+// 11/11
+//   (?) how to merge preamble_rx and rx inside phy_tx_rx?
 
 #include <stdint.h>
 
 #define DEBUG
-//#define DEBUG_RX
+#define DEBUG_RX
 //#define DEBUG_TX
-//#define RX_NODE
-#define TX_NODE
+#define RX_NODE
+//#define TX_NODE
 
 #define PHY_IDLE 0
 #define PHY_RX 1
@@ -28,7 +30,7 @@
 #define PHY_PREAMBLE_RX 3
 #define PHY_PREAMBLE_TX 4
 #define PHY_SAMPLE_PERIOD 500 // phy sensing (sampling) period
-#define PHY_PULSE_WIDTH 5000 // pulse width
+#define PHY_PULSE_WIDTH 2000 // pulse width
 #define TIMER2COUNT 192 // Timer2 runs at 16MHz, in order to interrupt every 500us -> count 63x
 #define PHY_SAFE_IDLE 5*PERIOD_LEN // minimum idle pulse period to ensure it is safe to transmit
 #define MAX_PHY_BUFFER 263 // 263 (maximum MAC packet), assume no additional PHY bytes
@@ -187,7 +189,7 @@ void _phy_update() {
   _push_sampling_buffer(analogRead(rx_pin)); // sample rx_pin
   if (pulse_iter == 0) { // update tx_pin
 #ifdef DEBUG_TX
-    Serial.print("ei: "); Serial.print(encode_iter & 0x01);Serial.print(", tx: "); Serial.println(encode_buffer[encode_iter & 0x01]);
+//    Serial.print("ei: "); Serial.print(encode_iter & 0x01);Serial.print(", tx: "); Serial.println(encode_buffer[encode_iter & 0x01]);
 #endif
     digitalWrite(tx_pin, encode_buffer[encode_iter & 0x01]);
     encode_iter++;
@@ -257,7 +259,7 @@ void _phy_preamble_rx() {
       }
       else {
 #ifdef DEBUG_RX
-        Serial.println("bad");
+        Serial.println("bad, IDLE");
 #endif
         phy_state = PHY_IDLE;
         preamble_iter = 0;
@@ -265,13 +267,15 @@ void _phy_preamble_rx() {
       }
     }
     else {
-#ifdef DEBUG_RX
-      Serial.println("strange");
-#endif
+      Serial.println("strange, IDLE");
       phy_state = PHY_IDLE;
       preamble_iter = 0;
       _empty_array(preamble_buffer, PREAMBLE_LEN);
     }
+  }
+  if ((no_edge_count > NO_EDGE_PERIOD_LEN) && (phy_state != PHY_TX_RX)) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
+    Serial.println("corrupt, PHY_IDLE");
+    phy_state = PHY_IDLE;
   }
 }
 
@@ -306,7 +310,7 @@ void _phy_rx() {
     }
   }
   if ((no_edge_count > NO_EDGE_PERIOD_LEN) && (phy_state != PHY_TX_RX)) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
-    Serial.println("CORRUPT, PHY_IDLE");
+    Serial.println("corrupt, PHY_IDLE");
     phy_state = PHY_IDLE;
   }
   rx_iter++;
@@ -363,7 +367,7 @@ void _phy_tx_rx() {
       tx_bits_iter = 0;
     }
   }
-  _phy_rx(); // receive data
+//  _phy_preamble_rx(); // receive data
 }
 
 // called every PHY_SAMPLE_PERIOD
@@ -415,7 +419,7 @@ void _encode_zero() {
 //   ensure that the edge is detected after one PHY_PULSE_WIDTH
 int8_t _detect_edge() {
   int8_t in_bit = -1;
-  int sample_diff = sampling_buffer[PULSE_LEN - 1] - sampling_buffer[0];
+  int sample_diff = sampling_buffer[2] - sampling_buffer[1];
   if (sample_diff < NEG_EDGE_THRESHOLD) { // falling edge
     if (no_edge_count >= (PULSE_LEN>>1)) { // no edge in vicinity (i.e. not a repetition or transition)
       in_bit = 0;
@@ -427,7 +431,7 @@ int8_t _detect_edge() {
       no_edge_count = 0;
     }
   }
-#ifdef DEBUG_RX
+#ifdef DEBUG_RX_DETECT
   if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
     Serial.print("sb: ");
     for (uint8_t j = 0; j < PULSE_LEN; j++) {
