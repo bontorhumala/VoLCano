@@ -14,11 +14,11 @@
 //   (ok) fix edge detection, previously assigning in_bit always 1 because variable is uint (never negative thus never 0)
 //   (ok) fix edge detection, edge is only considered if 0-th bit and PULSE_LEN-th bit exceeds EDGE_THRESHOLD
 // 11/11
-//   (?) how to merge preamble_rx and rx inside phy_tx_rx?
+//   (?) able to receive bits, but really depends on timing. need to check tx output and also adc sampling period
 
 #include <stdint.h>
 
-#define SERIAL_PLOT
+//#define SERIAL_PLOT
 #define DEBUG
 #define DEBUG_RX
 //#define DEBUG_RX_DETECT
