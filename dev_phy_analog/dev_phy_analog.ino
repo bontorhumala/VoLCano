@@ -19,11 +19,12 @@
 #include <stdint.h>
 
 #define SERIAL_PLOT
-//#define DEBUG
-//#define DEBUG_RX
+#define DEBUG
+#define DEBUG_RX
+//#define DEBUG_RX_DETECT
+#define RX_NODE
 //#define DEBUG_TX
-//#define RX_NODE
-#define TX_NODE
+//#define TX_NODE
 
 #define PHY_IDLE 0
 #define PHY_RX 1
@@ -138,11 +139,11 @@ void setup() {
   do {
     test_rx_size = phy_rx(test_rx);
     if (test_rx_size > -1) {
-//      Serial.print("rx: ");
+      Serial.print("rx: ");
       for (int i = 0; i < test_rx_size; i++) {
-//        Serial.println(test_rx[i]);
+        Serial.println(test_rx[i]);
       }
-//      Serial.println("\nfinished rx \n");
+      Serial.println("\nfinished rx \n");
     }
   } while (test_rx_size == -1);
 #endif
@@ -294,10 +295,16 @@ void _phy_rx() {
   int8_t in_bit;
   in_bit = _detect_edge();
   if (in_bit > -1) { // check incoming bit
+#ifdef DEBUG_RX
+    Serial.print("bit: ");Serial.println(in_bit);
+#endif
     decode_buffer[decode_iter] = in_bit;
     decode_iter++;
     if (decode_iter == BYTE_LEN) {
       rx_buffer[rx_iter] = _bits_byte(decode_buffer);
+#ifdef DEBUG_RX
+      Serial.print("OK, 1 byte: ");Serial.println(rx_buffer[rx_iter]);
+#endif
       decode_iter = 0;
       if ((rx_iter == 1) && (rx_buffer[rx_iter] == tx_buffer[1]) && (tx_len > 0)) { // if there is something to transmit to the transmitting node
         if (phy_state != PHY_TX_RX) { // do not reset tx_iter if already in PHY_TX_RX
@@ -308,10 +315,6 @@ void _phy_rx() {
         return;
       } else if (rx_iter == 4) { // get rx_len
         rx_len = rx_buffer[rx_iter];
-      } else {
-#ifdef DEBUG
-        Serial.print("OK, 1 byte: ");Serial.println(rx_buffer[rx_iter]);
-#endif
       }
     }
     idle_counter = 0; // reset idle_counter to hold back transmission
@@ -453,7 +456,7 @@ int8_t _detect_edge() {
       no_edge_count = 0;
     }
   }
-#ifdef DEBUG_RX
+#ifdef DEBUG_RX_DETECT
   if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
     Serial.print("sb: ");
     for (uint8_t j = 0; j < PULSE_LEN; j++) {
