@@ -18,11 +18,13 @@
 
 #include <stdint.h>
 
-#define DEBUG
-#define DEBUG_RX
+#define SERIAL_PLOT
+//#define DEBUG
+//#define DEBUG_RX
 //#define DEBUG_TX
 #define RX_NODE
 //#define TX_NODE
+#define TEST_TX 0b10100101
 
 #define PHY_IDLE 0
 #define PHY_RX 1
@@ -30,7 +32,7 @@
 #define PHY_PREAMBLE_RX 3
 #define PHY_PREAMBLE_TX 4
 #define PHY_SAMPLE_PERIOD 500 // phy sensing (sampling) period
-#define PHY_PULSE_WIDTH 2000 // pulse width
+#define PHY_PULSE_WIDTH 5000 // pulse width
 #define TIMER2COUNT 192 // Timer2 runs at 16MHz, in order to interrupt every 500us -> count 63x
 #define PHY_SAFE_IDLE 5*PERIOD_LEN // minimum idle pulse period to ensure it is safe to transmit
 #define MAX_PHY_BUFFER 263 // 263 (maximum MAC packet), assume no additional PHY bytes
@@ -108,7 +110,7 @@ void _empty_array(uint8_t *buff, uint8_t len);
 uint8_t test_rx[1];
 #endif
 #ifdef TX_NODE // address is 0x77
-uint8_t test_tx[1] = {0b00000001};
+uint8_t test_tx[1] = {TEST_TX};
 #endif
 
 ISR(TIMER2_OVF_vect)
@@ -121,10 +123,10 @@ void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
 #ifdef RX_NODE
-  Serial.println("RX Node\n");
+//  Serial.println("RX Node\n");
 #endif
 #ifdef TX_NODE
-  Serial.println("TX Node\n");
+//  Serial.println("TX Node\n");
 #endif
   phy_state = PHY_IDLE;
   tx_pin = A1;
@@ -137,16 +139,16 @@ void setup() {
   do {
     test_rx_size = phy_rx(test_rx);
     if (test_rx_size > -1) {
-      Serial.print("rx: ");
+//      Serial.print("rx: ");
       for (int i = 0; i < test_rx_size; i++) {
-        Serial.println(test_rx[i]);
+//        Serial.println(test_rx[i]);
       }
-      Serial.println("\nfinished rx \n");
+//      Serial.println("\nfinished rx \n");
     }
   } while (test_rx_size == -1);
 #endif
 #ifdef TX_NODE
-  Serial.println("Transmitting\n");
+//  Serial.println("Transmitting\n");
   phy_tx(test_tx, 1);
 #endif
 }
@@ -210,13 +212,17 @@ void _phy_idle() {
   in_bit = _detect_edge();
   if (in_bit > -1) { // check incoming bit
     idle_counter = 0; // reset idle_counter to hold back transmission
+#ifdef DEBUG   
     Serial.println("PRE_RX");
+#endif
     phy_state = PHY_PREAMBLE_RX;
     return;
   }
   if ((idle_counter > PHY_SAFE_IDLE) && (tx_len > 0) && (pulse_iter == PULSE_LEN)) { // check tx buffer and ensure safe to send
     encode_iter = 0;
+#ifdef DEBUG
     Serial.println("PRE_TX");
+#endif
     phy_state = PHY_PREAMBLE_TX;
     return;
   }
@@ -267,14 +273,18 @@ void _phy_preamble_rx() {
       }
     }
     else {
+#ifdef DEBUG
       Serial.println("strange, IDLE");
+#endif
       phy_state = PHY_IDLE;
       preamble_iter = 0;
       _empty_array(preamble_buffer, PREAMBLE_LEN);
     }
   }
   if ((no_edge_count > NO_EDGE_PERIOD_LEN) && (phy_state != PHY_TX_RX)) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
+#ifdef DEBUG
     Serial.println("corrupt, PHY_IDLE");
+#endif
     phy_state = PHY_IDLE;
   }
 }
@@ -299,18 +309,26 @@ void _phy_rx() {
         return;
       } else if (rx_iter == 4) { // get rx_len
         rx_len = rx_buffer[rx_iter];
+      } else {
+#ifdef DEBUG
+        Serial.print("OK, 1 byte: ");Serial.println(rx_buffer[rx_iter]);
+#endif
       }
     }
     idle_counter = 0; // reset idle_counter to hold back transmission
   } 
   if (rx_iter > 4) { // rx_len has been received
     if ((rx_iter == rx_len) && (phy_state != PHY_TX_RX)) { // finished receiving
+#ifdef DEBUG
       Serial.println("LEN, PHY_IDLE");
+#endif
       phy_state = PHY_IDLE;
     }
   }
   if ((no_edge_count > NO_EDGE_PERIOD_LEN) && (phy_state != PHY_TX_RX)) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
+#ifdef DEBUG
     Serial.println("corrupt, PHY_IDLE");
+#endif
     phy_state = PHY_IDLE;
   }
   rx_iter++;
@@ -333,7 +351,9 @@ void _phy_preamble_tx() {
     preamble_iter = 0;
     tx_iter = 0;
     encode_iter = 0;
+#ifdef DEBUG
     Serial.println("TX_RX");
+#endif
     phy_state = PHY_TX_RX;
   }
 }
@@ -349,9 +369,13 @@ void _phy_tx_rx() {
       _byte_bits(tx_buffer[tx_iter], tx_bits_buffer);
       if (tx_iter == tx_len) { // finished transmission
         tx_len = 0;
+#ifdef DEBUG
         Serial.println("IDLE");
+#endif
         phy_state = PHY_IDLE;
+#ifdef DEBUG
         Serial.println("FINISHED TRANSMISSION");
+#endif
         return;
       }
       tx_iter++;
@@ -420,12 +444,12 @@ int8_t _detect_edge() {
   int8_t in_bit = -1;
   int sample_diff = sampling_buffer[MID_BIT] - sampling_buffer[MID_BIT-1];
   if (sample_diff < NEG_EDGE_THRESHOLD) { // falling edge
-    if (no_edge_count >= 1) { // no edge in vicinity (i.e. not a repetition or transition)
+    if (no_edge_count >= 8) { // no edge in vicinity (i.e. not a repetition or transition)
       in_bit = 0;
       no_edge_count = 0;
     }
   } else if (sample_diff > EDGE_THRESHOLD) { // positive edge
-    if (no_edge_count >= 1) {
+    if (no_edge_count >= 8) {
       in_bit = 1;
       no_edge_count = 0;
     }
@@ -440,6 +464,13 @@ int8_t _detect_edge() {
   }
   else {
     Serial.print(in_bit);
+  }
+#endif
+#ifdef SERIAL_PLOT
+  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
+    Serial.print(sample_diff);
+    Serial.print(",");
+    Serial.println(in_bit);
   }
 #endif
   if (in_bit == -1) {
