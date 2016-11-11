@@ -18,9 +18,9 @@
 
 #include <stdint.h>
 
-//#define SERIAL_PLOT
-#define DEBUG
-#define DEBUG_RX
+#define SERIAL_PLOT
+//#define DEBUG
+//#define DEBUG_RX
 //#define DEBUG_RX_DETECT
 #define RX_NODE
 //#define DEBUG_TX
