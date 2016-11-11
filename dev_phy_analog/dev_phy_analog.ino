@@ -22,9 +22,8 @@
 //#define DEBUG
 //#define DEBUG_RX
 //#define DEBUG_TX
-#define RX_NODE
-//#define TX_NODE
-#define TEST_TX 0b10100101
+//#define RX_NODE
+#define TX_NODE
 
 #define PHY_IDLE 0
 #define PHY_RX 1
@@ -107,10 +106,10 @@ void _push_sampling_buffer(uint16_t data);
 void _empty_array(uint8_t *buff, uint8_t len);
 
 #ifdef RX_NODE // address is 0x88
-uint8_t test_rx[1];
+uint8_t test_rx[3];
 #endif
 #ifdef TX_NODE // address is 0x77
-uint8_t test_tx[1] = {TEST_TX};
+uint8_t test_tx[3] = {0x00, 0x01, 0xFF};
 #endif
 
 ISR(TIMER2_OVF_vect)
@@ -149,7 +148,7 @@ void setup() {
 #endif
 #ifdef TX_NODE
 //  Serial.println("Transmitting\n");
-  phy_tx(test_tx, 1);
+  phy_tx(test_tx, 3);
 #endif
 }
 
