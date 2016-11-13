@@ -18,12 +18,13 @@
 
 #include <stdint.h>
 
-#define SERIAL_PLOT
+//#define SERIAL_PLOT
 //#define DEBUG
 //#define DEBUG_RX
 //#define DEBUG_RX_DETECT
-#define RX_NODE
 //#define DEBUG_TX
+#define DEBUG_OSC
+#define RX_NODE
 //#define TX_NODE
 
 #define PHY_IDLE 0
@@ -31,9 +32,9 @@
 #define PHY_TX_RX 2
 #define PHY_PREAMBLE_RX 3
 #define PHY_PREAMBLE_TX 4
-#define PHY_SAMPLE_PERIOD 500 // phy sensing (sampling) period
-#define PHY_PULSE_WIDTH 5000 // pulse width
-#define TIMER2COUNT 192 // Timer2 runs at 16MHz, in order to interrupt every 500us -> count 63x
+#define PHY_SAMPLE_PERIOD 150 // phy sensing (sampling) period
+#define PHY_PULSE_WIDTH 1500 // pulse width
+#define TIMER2COUNT 125 // Timer2 runs at 16MHz, prescaler 64, (4 us per tick), in order to interrupt every 300us -> count 75 (CTC)
 #define PHY_SAFE_IDLE 5*PERIOD_LEN // minimum idle pulse period to ensure it is safe to transmit
 #define MAX_PHY_BUFFER 263 // 263 (maximum MAC packet), assume no additional PHY bytes
 #define ACK_PHY_BUFFER 8 // 8 (ACK in MAC), assume no additional PHY bytes
@@ -113,10 +114,20 @@ uint8_t test_rx[3];
 uint8_t test_tx[3] = {0x00, 0x01, 0xFF};
 #endif
 
-ISR(TIMER2_OVF_vect)
+#ifdef DEBUG_OSC
+uint8_t osc_pin1;
+uint8_t osc_pin2;
+bool osc_pin1_state;
+bool osc_pin2_state;
+#endif
+
+ISR(TIMER2_COMPA_vect)
 {
   _phy_fsm_control();
-  TCNT2 = TIMER2COUNT;
+#ifdef DEBUG_OSC
+  osc_pin1_state = !osc_pin1_state;
+  digitalWrite(osc_pin1, osc_pin1_state);
+#endif  
 }
 
 void setup() {
@@ -134,16 +145,27 @@ void setup() {
   pinMode(tx_pin, OUTPUT);
   _initialize_timer();
 
+#ifdef DEBUG_OSC
+  osc_pin1 = 12;
+  osc_pin2 = 13;
+  pinMode(osc_pin1, OUTPUT);
+  pinMode(osc_pin2, OUTPUT);
+  osc_pin1_state = LOW;
+  osc_pin2_state = LOW;
+  digitalWrite(osc_pin1, osc_pin1_state);
+  digitalWrite(osc_pin2, osc_pin2_state);
+#endif
+
 #ifdef RX_NODE
   int16_t test_rx_size = 0;
   do {
     test_rx_size = phy_rx(test_rx);
     if (test_rx_size > -1) {
-      Serial.print("rx: ");
+//      Serial.print("rx: ");
       for (int i = 0; i < test_rx_size; i++) {
-        Serial.println(test_rx[i]);
+//        Serial.println(test_rx[i]);
       }
-      Serial.println("\nfinished rx \n");
+//      Serial.println("\nfinished rx \n");
     }
   } while (test_rx_size == -1);
 #endif
@@ -151,11 +173,15 @@ void setup() {
 //  Serial.println("Transmitting\n");
   phy_tx(test_tx, 3);
 #endif
+
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
-
+#ifdef TX_NODE
+  phy_tx(test_tx, 3);
+  delay(1000);
+#endif
 }
 
 // returns true if medium is idle, false otherwise
@@ -254,6 +280,13 @@ void _phy_preamble_rx() {
       if (is_preamble) {
 #ifdef DEBUG_RX
         Serial.println("ok, PHY_RX");
+#endif
+
+#ifdef DEBUG_OSC
+//        if (rx_buffer[rx_iter] == 0x00) {
+          osc_pin2_state = !osc_pin2_state;
+          digitalWrite(osc_pin2, osc_pin2_state);
+//        }
 #endif
         decode_buffer[decode_iter & 0x01] = in_bit;
         decode_iter++;
@@ -468,6 +501,7 @@ int8_t _detect_edge() {
     Serial.print(in_bit);
   }
 #endif
+
 #ifdef SERIAL_PLOT
   if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
     Serial.print(sample_diff);
@@ -541,11 +575,11 @@ void _empty_array(uint8_t *buff, uint8_t len) {
 void _initialize_timer()
 {
   noInterrupts();
-  TCCR2B = 0x00;        //Disbale Timer2 while we set it up
-  TCNT2  = TIMER2COUNT;         //Reset Timer Count to 130 out of 255
-  TIFR2  = 0x00;        //Timer2 INT Flag Reg: Clear Timer Overflow Flag
-  TIMSK2 = 0x01;        //Timer2 INT Reg: Timer2 Overflow Interrupt Enable
-  TCCR2A = 0x00;        //Timer2 Control Reg A: Wave Gen Mode normal
-  TCCR2B = 0x05;        //Timer2 Control Reg B: Timer Prescaler set to 128
+  TCCR2A = 0x00;                // Timer2 disable interrupt
+  TCCR2B = 0x00;                // Timer2 disable interrupt
+  OCR2A = TIMER2COUNT;          // Timer2 compare match value
+  TCCR2A |= (1 << WGM21);       // Timer2 Control Reg A: Set to CTC mode
+  TCCR2B = _BV(CS22);           // Timer2 Control Reg B: Timer Prescaler set to 64
+  TIMSK2 |= (1 << OCIE2A);      // Timer2 INT Reg: Timer2 CTC Interrupt Enable
   interrupts();
 }
