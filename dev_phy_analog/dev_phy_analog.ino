@@ -87,15 +87,15 @@ unsigned long timestamp;
 bool phy_sense();
 int16_t phy_rx(uint8_t *data);
 void phy_tx(uint8_t *data, uint16_t data_len);
+void phy_fsm_control(); // needs to be called from loop() by the application
 
 // PRIVATE
-void _phy_update();
+void _phy_update_tx();
 void _phy_idle();
 void _phy_rx();
 void _phy_tx_rx();
 void _phy_preamble_rx();
 void _phy_preamble_tx();
-void _phy_fsm_control();
 void _encode_zero();
 void _encode_one();
 void _encode_idle();
@@ -121,9 +121,11 @@ bool osc_pin1_state;
 bool osc_pin2_state;
 #endif
 
+// update pulse_iter and sample ADC every PHY_SAMPLE_PERIOD
 ISR(TIMER2_COMPA_vect)
 {
-  _phy_fsm_control();
+  _push_sampling_buffer(analogRead(rx_pin)); // sample rx_pin
+  pulse_iter++;
 #ifdef DEBUG_OSC
   osc_pin1_state = !osc_pin1_state;
   digitalWrite(osc_pin1, osc_pin1_state);
@@ -178,6 +180,7 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
+  phy_fsm_control();
 #ifdef TX_NODE
   phy_tx(test_tx, 3);
   delay(1000);
@@ -212,10 +215,33 @@ void phy_tx(uint8_t *data, uint16_t data_len) {
   tx_iter = 0;
 }
 
-// sample rx pin every PHY_SAMPLE_PERIOD
+// called every PHY_SAMPLE_PERIOD
+void phy_fsm_control() {
+  _phy_update_tx();
+  switch (phy_state) {
+    case PHY_IDLE:
+      _phy_idle();
+      break;
+    case PHY_PREAMBLE_RX:
+      _phy_preamble_rx();
+      break;
+    case PHY_RX:
+      _phy_rx();
+      break;
+    case PHY_PREAMBLE_TX:
+      _phy_preamble_tx();
+      break;
+    case PHY_TX_RX:
+      _phy_tx_rx();
+      break;
+  }
+  if (pulse_iter == PULSE_LEN) {
+    pulse_iter = 0;
+  }  
+}
+
 // update tx pin every PULSE_WINDOW_LEN
-void _phy_update() {
-  _push_sampling_buffer(analogRead(rx_pin)); // sample rx_pin
+void _phy_update_tx() {
   if (pulse_iter == 0) { // update tx_pin
 #ifdef DEBUG_TX
     Serial.print("eb0: "); Serial.print(encode_buffer[0]);Serial.print("eb1: "); Serial.print(encode_buffer[1]);Serial.print("ei: ");Serial.print(encode_iter & 0x01);Serial.print(", tx: "); Serial.println(encode_buffer[encode_iter & 0x01]);
@@ -226,7 +252,6 @@ void _phy_update() {
       idle_counter++;
     }
   }
-  pulse_iter++;
 }
 
 // if find an edge, go to rx
@@ -426,31 +451,6 @@ void _phy_tx_rx() {
     }
   }
 //  _phy_preamble_rx(); // receive data
-}
-
-// called every PHY_SAMPLE_PERIOD
-void _phy_fsm_control() {
-  _phy_update();
-  switch (phy_state) {
-    case PHY_IDLE:
-      _phy_idle();
-      break;
-    case PHY_PREAMBLE_RX:
-      _phy_preamble_rx();
-      break;
-    case PHY_RX:
-      _phy_rx();
-      break;
-    case PHY_PREAMBLE_TX:
-      _phy_preamble_tx();
-      break;
-    case PHY_TX_RX:
-      _phy_tx_rx();
-      break;
-  }
-  if (pulse_iter == PULSE_LEN) {
-    pulse_iter = 0;
-  }  
 }
 
 // idle
