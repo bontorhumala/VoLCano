@@ -19,12 +19,13 @@
 #include <stdint.h>
 
 #define SERIAL_PLOT
+#define DEBUG_OSC
 //#define DEBUG
 //#define DEBUG_RX
 //#define DEBUG_RX_DETECT
-#define RX_NODE
+//#define RX_NODE
 //#define DEBUG_TX
-//#define TX_NODE
+#define TX_NODE
 
 #define PHY_IDLE 0
 #define PHY_RX 1
@@ -113,9 +114,20 @@ uint8_t test_rx[3];
 uint8_t test_tx[3] = {0x00, 0x01, 0xFF};
 #endif
 
+#ifdef DEBUG_OSC
+uint8_t osc_pin1;
+uint8_t osc_pin2;
+bool osc_pin1_state;
+bool osc_pin2_state;
+#endif
+
 ISR(TIMER2_OVF_vect)
 {
   _phy_fsm_control();
+#ifdef DEBUG_OSC
+  osc_pin1_state = !osc_pin1_state;
+  digitalWrite(osc_pin1, osc_pin1_state);
+#endif
   TCNT2 = TIMER2COUNT;
 }
 
@@ -134,6 +146,17 @@ void setup() {
   pinMode(tx_pin, OUTPUT);
   _initialize_timer();
 
+#ifdef DEBUG_OSC
+  osc_pin1 = 12;
+  osc_pin2 = 13;
+  pinMode(osc_pin1, OUTPUT);
+  pinMode(osc_pin2, OUTPUT);
+  osc_pin1_state = LOW;
+  osc_pin2_state = LOW;
+  digitalWrite(osc_pin1, osc_pin1_state);
+  digitalWrite(osc_pin2, osc_pin2_state);
+#endif
+
 #ifdef RX_NODE
   int16_t test_rx_size = 0;
   do {
@@ -147,6 +170,7 @@ void setup() {
     }
   } while (test_rx_size == -1);
 #endif
+
 #ifdef TX_NODE
 //  Serial.println("Transmitting\n");
   phy_tx(test_tx, 3);
