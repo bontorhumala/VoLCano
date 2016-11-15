@@ -1,0 +1,16 @@
+{
+	"name": "VoLCano",
+	"keywords": "vlc, led, visible, light, communication",
+	"description": "Visible Light Communication on Arduino (VoLCano) library tested on Arduino Uno",
+	"authors": {
+		"name": "VoLCano team",
+		"url": "https://github.com/bontorhumala/VoLCano"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/bontorhumala/VoLCano.git"
+	},
+	"version": "1.0",
+	"frameworks": "arduino",
+	"platforms": ["atmelavr"]
+}
