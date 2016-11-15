@@ -24,17 +24,17 @@
 //#define DEBUG_RX_DETECT
 //#define DEBUG_TX
 #define DEBUG_OSC
-#define RX_NODE
-//#define TX_NODE
+//#define RX_NODE
+#define TX_NODE
 
 #define PHY_IDLE 0
 #define PHY_RX 1
 #define PHY_TX_RX 2
 #define PHY_PREAMBLE_RX 3
 #define PHY_PREAMBLE_TX 4
-#define PHY_SAMPLE_PERIOD 150 // phy sensing (sampling) period
-#define PHY_PULSE_WIDTH 1500 // pulse width
-#define TIMER2COUNT 125 // Timer2 runs at 16MHz, prescaler 64, (4 us per tick), in order to interrupt every 300us -> count 75 (CTC)
+#define PHY_SAMPLE_PERIOD 500 // phy sensing (sampling) period
+#define PHY_PULSE_WIDTH 2500 // pulse width
+#define TIMER2COUNT 125 // Timer2 runs at 16MHz, prescaler 64, (4 us per tick), in order to interrupt every 500us -> count 125 (CTC)
 #define PHY_SAFE_IDLE 5*PERIOD_LEN // minimum idle pulse period to ensure it is safe to transmit
 #define MAX_PHY_BUFFER 263 // 263 (maximum MAC packet), assume no additional PHY bytes
 #define ACK_PHY_BUFFER 8 // 8 (ACK in MAC), assume no additional PHY bytes
@@ -47,6 +47,9 @@
 #define EDGE_THRESHOLD 10 // minimum range in PULSE_WINDOW_LEN to be considered an edge 
 #define NEG_EDGE_THRESHOLD -10
 #define MID_BIT (PULSE_LEN>>1)
+
+#define DEBUG_OSC_P1    ({osc_pin1_state = !osc_pin1_state; digitalWrite(osc_pin1, osc_pin1_state);})
+#define DEBUG_OSC_P2    ({osc_pin2_state = !osc_pin2_state; digitalWrite(osc_pin1, osc_pin2_state);})
 
 // rx tx buffer and iterator
 uint8_t rx_buffer[MAX_PHY_BUFFER];
@@ -122,14 +125,17 @@ bool osc_pin2_state;
 #endif
 
 // update pulse_iter and sample ADC every PHY_SAMPLE_PERIOD
-ISR(TIMER2_COMPA_vect)
+ISR(TIMER0_COMPA_vect)
 {
-  _push_sampling_buffer(analogRead(rx_pin)); // sample rx_pin
-  pulse_iter++;
+  phy_fsm_control();
 #ifdef DEBUG_OSC
-  osc_pin1_state = !osc_pin1_state;
-  digitalWrite(osc_pin1, osc_pin1_state);
+//DEBUG_OSC_P1;
 #endif  
+}
+
+ISR(ADC_vect)
+{
+  _push_sampling_buffer(ADC); // sample rx_pin
 }
 
 void setup() {
@@ -140,15 +146,17 @@ void setup() {
 #endif
 #ifdef TX_NODE
 //  Serial.println("TX Node\n");
+  pinMode(LED_BUILTIN, OUTPUT);
 #endif
   phy_state = PHY_IDLE;
   tx_pin = A1;
   rx_pin = A0;
   pinMode(tx_pin, OUTPUT);
-  _initialize_timer();
+  _initialize_timer0();
+  _initialize_adc();
 
 #ifdef DEBUG_OSC
-  osc_pin1 = 12;
+  osc_pin1 = A1;
   osc_pin2 = 13;
   pinMode(osc_pin1, OUTPUT);
   pinMode(osc_pin2, OUTPUT);
@@ -180,7 +188,6 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
-  phy_fsm_control();
 #ifdef TX_NODE
   phy_tx(test_tx, 3);
   delay(1000);
@@ -250,8 +257,9 @@ void _phy_update_tx() {
     encode_iter++;
     if (phy_state == PHY_IDLE) {
       idle_counter++;
-    }
+    } 
   }
+  pulse_iter++;
 }
 
 // if find an edge, go to rx
@@ -270,6 +278,7 @@ void _phy_idle() {
     return;
   }
   if ((idle_counter > PHY_SAFE_IDLE) && (tx_len > 0) && (pulse_iter == PULSE_LEN)) { // check tx buffer and ensure safe to send
+      digitalWrite(LED_BUILTIN, HIGH);
     encode_iter = 0;
 #ifdef DEBUG
     Serial.println("PRE_TX");
@@ -309,8 +318,7 @@ void _phy_preamble_rx() {
 
 #ifdef DEBUG_OSC
 //        if (rx_buffer[rx_iter] == 0x00) {
-          osc_pin2_state = !osc_pin2_state;
-          digitalWrite(osc_pin2, osc_pin2_state);
+//DEBUG_OSC_P1;
 //        }
 #endif
         decode_buffer[decode_iter & 0x01] = in_bit;
@@ -572,7 +580,7 @@ void _empty_array(uint8_t *buff, uint8_t len) {
   }
 }
 
-void _initialize_timer()
+void _initialize_timer2()
 {
   noInterrupts();
   TCCR2A = 0x00;                // Timer2 disable interrupt
@@ -583,3 +591,26 @@ void _initialize_timer()
   TIMSK2 |= (1 << OCIE2A);      // Timer2 INT Reg: Timer2 CTC Interrupt Enable
   interrupts();
 }
+
+void _initialize_timer0()
+{
+  noInterrupts();
+  TCCR0A = 0x00;                // Timer0 disable interrupt
+  TCCR0B = 0x00;                // Timer0 disable interrupt
+  OCR0A = TIMER2COUNT;          // Timer0 compare match value
+  TCCR0A |= (1 << WGM01);       // Timer0 Control Reg A: Set to CTC mode
+  TCCR0B = _BV(CS01) | _BV(CS00);           // Timer0 Control Reg B: Timer Prescaler set to 64
+  TIMSK0 |= (1 << OCIE0A);      // Timer0 INT Reg: Timer2 CTC Interrupt Enable
+  interrupts();
+}
+
+void _initialize_adc()
+{
+  noInterrupts();
+  ADMUX = _BV(REFS0);                                //use AVcc as reference
+  ADCSRA  = _BV(ADEN)  | _BV(ADATE) | _BV(ADIE);     //enable ADC, auto trigger, interrupt when conversion complete
+  ADCSRA |= _BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0);    //ADC prescaler: divide by 128
+  ADCSRB = _BV(ADTS1) | _BV(ADTS0);                  //trigger ADC on Timer/Counter0 Compare Match A
+  interrupts();
+}
+
