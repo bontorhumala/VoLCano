@@ -18,6 +18,25 @@
 
 #include <stdint.h>
 
+// Direct GPIO access
+#define portOfPin(P)\
+  (((P)>=0&&(P)<8)?&PORTD:(((P)>7&&(P)<14)?&PORTB:&PORTC))
+#define ddrOfPin(P)\
+  (((P)>=0&&(P)<8)?&DDRD:(((P)>7&&(P)<14)?&DDRB:&DDRC))
+#define pinOfPin(P)\
+  (((P)>=0&&(P)<8)?&PIND:(((P)>7&&(P)<14)?&PINB:&PINC))
+#define pinIndex(P)((uint8_t)(P>13?P-14:P&7))
+#define pinMask(P)((uint8_t)(1<<pinIndex(P)))
+
+#define pinAsInput(P) *(ddrOfPin(P))&=~pinMask(P)
+#define pinAsInputPullUp(P) *(ddrOfPin(P))&=~pinMask(P);digitalHigh(P)
+#define pinAsOutput(P) *(ddrOfPin(P))|=pinMask(P)
+#define digitalLow(P) *(portOfPin(P))&=~pinMask(P)
+#define digitalHigh(P) *(portOfPin(P))|=pinMask(P)
+#define isHigh(P)((*(pinOfPin(P))& pinMask(P))>0)
+#define isLow(P)((*(pinOfPin(P))& pinMask(P))==0)
+#define digitalState(P)((uint8_t)isHigh(P))
+
 //#define SERIAL_PLOT
 #define DEBUG
 #define DEBUG_RX
@@ -145,7 +164,7 @@ void setup() {
   phy_state = PHY_IDLE;
   tx_pin = A1;
   rx_pin = A0;
-  pinMode(tx_pin, OUTPUT);
+  pinAsOutput(tx_pin);
   _initialize_timer();
 
 #ifdef RX_NODE
@@ -210,7 +229,8 @@ void _phy_update() {
 #ifdef DEBUG_TX
     Serial.print("eb0: "); Serial.print(encode_buffer[0]);Serial.print("eb1: "); Serial.print(encode_buffer[1]);Serial.print("ei: ");Serial.print(encode_iter & 0x01);Serial.print(", tx: "); Serial.println(encode_buffer[encode_iter & 0x01]);
 #endif
-    digitalWrite(tx_pin, encode_buffer[encode_iter & 0x01]);
+    if (encode_buffer[encode_iter & 0x01]) digitalHigh(tx_pin);
+    else digitalLow(tx_pin);
     encode_iter++;
     if (phy_state == PHY_IDLE) {
       idle_counter++;
