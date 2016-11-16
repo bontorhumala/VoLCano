@@ -41,27 +41,20 @@
 #define DEBUG
 #define DEBUG_RX
 //#define DEBUG_RX_DETECT
-//#define RX_NODE
+#define RX_NODE
+//#define DE_PROFILING
+//#define RX_PROFILING
 //#define DEBUG_TX
-#define TX_NODE
+//#define TX_NODE
 
 #define PHY_IDLE 0
 #define PHY_RX 1
 #define PHY_TX_RX 2
 #define PHY_PREAMBLE_RX 3
 #define PHY_PREAMBLE_TX 4
-
-#ifdef DEBUG_RX // serial print takes time, so sampling period is longer
-#define PHY_SAMPLE_PERIOD 320 // phy sensing (sampling) period
-#define PHY_PULSE_WIDTH 3200 // pulse width
-#define TIMER2COUNT 215 // Timer2 runs at 8us per tick, TCNT = 255 - (PHY_SAMPLE_PERIOD/8us)
-#endif
-#ifndef DEBUG_RX
-#define PHY_SAMPLE_PERIOD 240 // phy sensing (sampling) period
-#define PHY_PULSE_WIDTH 2400 // pulse width
-#define TIMER2COUNT 225 // Timer2 runs at 8us per tick, TCNT = 255 - (PHY_SAMPLE_PERIOD/8us)
-#endif
-
+#define PHY_SAMPLE_PERIOD 120 // phy sensing (sampling) period
+#define PHY_PULSE_WIDTH 1200 // pulse width
+#define TIMER2COUNT 240 // Timer2 runs at 8us per tick, TCNT = 255 - (PHY_SAMPLE_PERIOD/8us)
 #define PHY_SAFE_IDLE 5*PERIOD_LEN // minimum idle pulse period to ensure it is safe to transmit
 #define MAX_PHY_BUFFER 263 // 263 (maximum MAC packet), assume no additional PHY bytes
 #define ACK_PHY_BUFFER 8 // 8 (ACK in MAC), assume no additional PHY bytes
@@ -139,10 +132,10 @@ void _ADC_start_conversion(int adc_pin);
 int _ADC_read_conversion();
 
 #ifdef RX_NODE // address is 0x88
-uint8_t test_rx[20];
+uint8_t test_rx[40];
 #endif
 #ifdef TX_NODE // address is 0x77
-uint8_t test_tx[20] = {102, 56, 57, 62, 78, 81, 201, 17, 0, 255, 90, 102, 105, 125, 182, 127, 0, 0, 0, 76};
+uint8_t test_tx[40] = {102, 56, 57, 62, 78, 81, 201, 17, 0, 255, 90, 102, 105, 125, 182, 127, 0, 0, 0, 76, 102, 56, 57, 62, 105, 125, 182, 127, 0, 0, 0, 76, 78, 81, 201, 17, 0, 255, 90, 102};
 #endif
 
 ISR(TIMER2_OVF_vect)
@@ -167,22 +160,9 @@ void setup() {
   pinAsOutput(tx_pin);
   _initialize_timer();
 
-#ifdef RX_NODE
-  int16_t test_rx_size = 0;
-  do {
-    test_rx_size = phy_rx(test_rx);
-    if (test_rx_size > -1) {
-      Serial.print("rx: ");
-      for (int i = 0; i < test_rx_size; i++) {
-        Serial.println(test_rx[i]);
-      }
-      Serial.println("\nfinished rx \n");
-    }
-  } while (test_rx_size == -1);
-#endif
 #ifdef TX_NODE
 //  Serial.println("Transmitting\n");
-  phy_tx(test_tx, 20);
+  phy_tx(test_tx, 40);
 #endif
 }
 
@@ -322,8 +302,17 @@ void _phy_preamble_rx() {
 // update rx_buffer and increment rx_iter
 // rx_len is in dataframe[4]
 void _phy_rx() {
+#ifdef RX_PROFILING
+  unsigned long time_rx = micros();
+#endif  
   int8_t in_bit;
   in_bit = _detect_edge();
+#ifdef RX_PROFILING
+  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
+    Serial.print(micros()-time_rx);Serial.print(", ");
+    time_rx = micros();
+  }
+#endif
   if (in_bit > -1) { // check incoming bit
     decode_buffer[decode_iter] = in_bit;
     decode_iter++;
@@ -343,9 +332,16 @@ void _phy_rx() {
       } else if (rx_iter == 4) { // get rx_len
         rx_len = rx_buffer[rx_iter];
       }
+      rx_iter++;
     }
     idle_counter = 0; // reset idle_counter to hold back transmission
-  } 
+  }
+#ifdef RX_PROFILING
+  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
+    Serial.print(micros()-time_rx);Serial.print(", ");
+    time_rx = micros();
+  }
+#endif
   if (rx_iter > 4) { // rx_len has been received
     if ((rx_iter == rx_len) && (phy_state != PHY_TX_RX)) { // finished receiving
 #ifdef DEBUG
@@ -354,13 +350,24 @@ void _phy_rx() {
       phy_state = PHY_IDLE;
     }
   }
+#ifdef RX_PROFILING
+  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
+    Serial.print(micros()-time_rx);Serial.print(", ");
+    time_rx = micros();
+  }
+#endif  
   if ((no_edge_count > NO_EDGE_PERIOD_LEN) && (phy_state != PHY_TX_RX)) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
 #ifdef DEBUG
     Serial.println("corrupt, PHY_IDLE");
 #endif
     phy_state = PHY_IDLE;
   }
-  rx_iter++;
+#ifdef RX_PROFILING
+  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
+    Serial.print(micros()-time_rx);Serial.print("\n");
+    time_rx = micros();
+  }
+#endif    
 }
 
 // send preamble before entering tx_rx
@@ -424,6 +431,7 @@ void _phy_tx_rx() {
 
 // called every PHY_SAMPLE_PERIOD
 void _phy_fsm_control() {
+  noInterrupts();
   _phy_update();
   switch (phy_state) {
     case PHY_IDLE:
@@ -445,6 +453,7 @@ void _phy_fsm_control() {
   if (pulse_iter == PULSE_LEN) {
     pulse_iter = 0;
   }  
+  interrupts();
 }
 
 // idle
@@ -470,8 +479,17 @@ void _encode_zero() {
 //   i.e. 00: HIGH (falling) LOW (rising) HIGH (falling) LOW -> falling, falling
 //   ensure that the edge is detected after one PHY_PULSE_WIDTH
 int8_t _detect_edge() {
+#ifdef DE_PROFILING
+  unsigned long time_de = micros();
+#endif
   int8_t in_bit = -1;
   int sample_diff = sampling_buffer[MID_BIT] - sampling_buffer[MID_BIT-1];
+#ifdef DE_PROFILING
+  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
+    Serial.print(micros()-time_de);Serial.print(", ");
+    time_de = micros();
+  }
+#endif
   if (sample_diff < NEG_EDGE_THRESHOLD) { // falling edge
     if (no_edge_count >= EDGE_DISTANCE) { // no edge in vicinity (i.e. not a repetition or transition)
       in_bit = 0;
@@ -483,6 +501,12 @@ int8_t _detect_edge() {
       no_edge_count = 0;
     }
   }
+#ifdef DE_PROFILING
+  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
+    Serial.print(micros()-time_de);Serial.print(", ");
+    time_de = micros();
+  }
+#endif
 #ifdef DEBUG_RX_DETECT
   if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
     Serial.print("sb: ");
@@ -504,14 +528,18 @@ int8_t _detect_edge() {
 #endif
 #ifndef SERIAL_PLOT
   if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
-    noInterrupts();
-    delayMicroseconds(170); // workaround for a timing bug
-    interrupts();
+    delayMicroseconds(60); // workaround for a timing bug
   }
 #endif
   if (in_bit == -1) {
     no_edge_count++;
   }
+#ifdef DE_PROFILING
+  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
+    Serial.print(micros()-time_de);Serial.print("\n");
+    time_de = micros();
+  }
+#endif
   return in_bit;
 }
 
