@@ -18,9 +18,9 @@
 
 #include <stdint.h>
 
-#define SERIAL_PLOT
-//#define DEBUG
-//#define DEBUG_RX
+//#define SERIAL_PLOT
+#define DEBUG
+#define DEBUG_RX
 //#define DEBUG_RX_DETECT
 //#define RX_NODE
 //#define DEBUG_TX
@@ -31,9 +31,19 @@
 #define PHY_TX_RX 2
 #define PHY_PREAMBLE_RX 3
 #define PHY_PREAMBLE_TX 4
+
+#ifdef DEBUG_RX // serial print takes time, so sampling period is longer
+#define PHY_SAMPLE_PERIOD 320 // phy sensing (sampling) period
+#define PHY_PULSE_WIDTH 3200 // pulse width
+#define TIMER2COUNT 215 // Timer2 runs at 8us per tick, TCNT = 255 - (PHY_SAMPLE_PERIOD/8us)
+#endif
+
+#ifndef DEBUG_RX
 #define PHY_SAMPLE_PERIOD 240 // phy sensing (sampling) period
 #define PHY_PULSE_WIDTH 2400 // pulse width
 #define TIMER2COUNT 225 // Timer2 runs at 8us per tick, TCNT = 255 - (PHY_SAMPLE_PERIOD/8us)
+#endif
+
 #define PHY_SAFE_IDLE 5*PERIOD_LEN // minimum idle pulse period to ensure it is safe to transmit
 #define MAX_PHY_BUFFER 263 // 263 (maximum MAC packet), assume no additional PHY bytes
 #define ACK_PHY_BUFFER 8 // 8 (ACK in MAC), assume no additional PHY bytes
@@ -114,7 +124,7 @@ int _ADC_read_conversion();
 uint8_t test_rx[3];
 #endif
 #ifdef TX_NODE // address is 0x77
-uint8_t test_tx[3] = {0xAC, 0x78, 0x3A};
+uint8_t test_tx[3] = {0xCA, 0x87, 0x65};
 #endif
 
 ISR(TIMER2_OVF_vect)
@@ -246,13 +256,7 @@ void _phy_preamble_rx() {
       preamble_iter++;
     }
     else if (preamble_iter == PREAMBLE_LEN) { // check all preamble bits
-#ifdef DEBUG_RX
-      Serial.print("pre: ");
-#endif
       while ((i < PREAMBLE_LEN) && is_preamble) {
-#ifdef DEBUG_RX
-        Serial.print(preamble_buffer[i]);
-#endif
         if (preamble_buffer[i] != (i & 0x01)) {// preamble should be 0101...01 (depends on PREAMBLE_LEN)
           is_preamble = false;
         }
@@ -302,9 +306,6 @@ void _phy_rx() {
   int8_t in_bit;
   in_bit = _detect_edge();
   if (in_bit > -1) { // check incoming bit
-#ifdef DEBUG_RX
-    Serial.print("bit: ");Serial.println(in_bit);
-#endif
     decode_buffer[decode_iter] = in_bit;
     decode_iter++;
     if (decode_iter == BYTE_LEN) {
@@ -480,6 +481,13 @@ int8_t _detect_edge() {
     Serial.print(sample_diff);
     Serial.print(",");
     Serial.println(in_bit);
+  }
+#endif
+#ifndef SERIAL_PLOT
+  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
+    noInterrupts();
+    delayMicroseconds(170); // workaround for a timing bug
+    interrupts();
   }
 #endif
   if (in_bit == -1) {
