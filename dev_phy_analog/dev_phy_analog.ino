@@ -31,9 +31,9 @@
 #define PHY_TX_RX 2
 #define PHY_PREAMBLE_RX 3
 #define PHY_PREAMBLE_TX 4
-#define PHY_SAMPLE_PERIOD 400 // phy sensing (sampling) period
-#define PHY_PULSE_WIDTH 4000 // pulse width
-#define TIMER2COUNT 205 // Timer2 runs at 8us per tick, TCNT = 255 - (PHY_SAMPLE_PERIOD/8us)
+#define PHY_SAMPLE_PERIOD 240 // phy sensing (sampling) period
+#define PHY_PULSE_WIDTH 2400 // pulse width
+#define TIMER2COUNT 225 // Timer2 runs at 8us per tick, TCNT = 255 - (PHY_SAMPLE_PERIOD/8us)
 #define PHY_SAFE_IDLE 5*PERIOD_LEN // minimum idle pulse period to ensure it is safe to transmit
 #define MAX_PHY_BUFFER 263 // 263 (maximum MAC packet), assume no additional PHY bytes
 #define ACK_PHY_BUFFER 8 // 8 (ACK in MAC), assume no additional PHY bytes
@@ -114,7 +114,7 @@ int _ADC_read_conversion();
 uint8_t test_rx[3];
 #endif
 #ifdef TX_NODE // address is 0x77
-uint8_t test_tx[3] = {0x55, 0xAA, 0xB0};
+uint8_t test_tx[3] = {0xAC, 0x78, 0x3A};
 #endif
 
 ISR(TIMER2_OVF_vect)
