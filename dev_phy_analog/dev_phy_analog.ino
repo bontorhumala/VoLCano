@@ -319,21 +319,24 @@ void _phy_rx() {
     decode_buffer[decode_iter] = in_bit;
     decode_iter++;
     if (decode_iter == BYTE_LEN) {
+      decode_iter = 0;
       rx_buffer[rx_iter] = _bits_byte(decode_buffer);
 #ifdef DEBUG_RX
       Serial.print("OK, 1 byte: ");Serial.println(rx_buffer[rx_iter]);
 #endif
-      decode_iter = 0;
-      if ((rx_iter == 1) && (rx_buffer[rx_iter] == tx_buffer[1]) && (tx_len > 0)) { // if there is something to transmit to the transmitting node
-        if (phy_state != PHY_TX_RX) { // do not reset tx_iter if already in PHY_TX_RX
-          tx_iter = 0;
-          encode_iter = 0;
-          phy_state = PHY_PREAMBLE_TX;
-        }
-        return;
-      } else if (rx_iter == 4) { // get rx_len
+      if (rx_iter == 4) { // get rx_len
         rx_len = rx_buffer[rx_iter];
       }
+      else if (rx_iter > 4) { // rx_len has been received
+        if ((rx_iter == rx_len) && (phy_state != PHY_TX_RX)) { // finished receiving
+#ifdef DEBUG
+          Serial.println("LEN, PHY_IDLE");
+#endif
+          _reset_rx_to_idle();
+          phy_state = PHY_IDLE;
+          return;
+        }
+      }      
       rx_iter++;
     }
     idle_counter = 0; // reset idle_counter to hold back transmission
@@ -344,23 +347,7 @@ void _phy_rx() {
     time_rx = micros();
   }
 #endif
-  if (rx_iter > 4) { // rx_len has been received
-    if ((rx_iter == rx_len) && (phy_state != PHY_TX_RX)) { // finished receiving
-#ifdef DEBUG
-      Serial.println("LEN, PHY_IDLE");
-#endif
-      _reset_rx_to_idle();
-      phy_state = PHY_IDLE;
-      return;
-    }
-  }
-#ifdef RX_PROFILING
-  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
-    Serial.print(micros()-time_rx);Serial.print(", ");
-    time_rx = micros();
-  }
-#endif  
-  if ((no_edge_count > NO_EDGE_PERIOD_LEN) && (phy_state != PHY_TX_RX)) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
+  if (no_edge_count > NO_EDGE_PERIOD_LEN) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
 #ifdef DEBUG
     Serial.println("corrupt, PHY_IDLE");
 #endif
@@ -401,7 +388,7 @@ void _phy_preamble_tx() {
 }
 
 // update encode_buffer and increment tx_iter
-// meanwhile, still receive data (full duplex)
+// meanwhile, still receive data (full duplex) --> skipped for now
 void _phy_tx_rx() {
 #ifdef DEBUG_TX
   Serial.print("TXRX: ");Serial.print(encode_iter & 0x01);Serial.print(", tx_bits_iter: ");Serial.print(tx_bits_iter);Serial.print(", tx_iter: ");Serial.print(tx_iter);Serial.print(", puli: ");Serial.println(pulse_iter);
@@ -429,7 +416,6 @@ void _phy_tx_rx() {
       tx_bits_iter = 0;
     }
   }
-  // _phy_preamble_rx(); // receive data
 }
 
 // called every PHY_SAMPLE_PERIOD

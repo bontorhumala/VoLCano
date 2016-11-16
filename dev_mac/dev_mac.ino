@@ -2,9 +2,11 @@
 // MAC layer of Volcano
 // LOG
 // 10/31
-//   (?) initial version, use QueueArray for rx and tx buffer
+//   (-) initial version, use QueueArray for rx and tx buffer
 // 11/8
-//   (?) use https://github.com/JChristensen/Timer library to update FSM
+//   (-) use https://github.com/JChristensen/Timer library to update FSM
+// 11/16
+//   (?) integration with dev_phy_analog
 
 #include <Event.h>
 #include <Timer.h>
@@ -78,10 +80,25 @@ void _mac_read_packet();
 void _mac_fsm_control();
 
 void setup() {
+  // PHY initialization
+  Serial.begin(115200);
+  _ADC_setup();
+#ifdef RX_NODE
+  Serial.println("RX Node\n");
+#endif
+#ifdef TX_NODE
+  Serial.println("TX Node\n");
+#endif  
+  phy_state = PHY_IDLE;
+  tx_pin = A1;
+  rx_pin = A0;
+  pinAsOutput(tx_pin);
+  _initialize_timer();
+
+  // MAC initialization
   addr = 0x77;
   mac_state = MAC_IDLE;
-  random_cw = 0;
-  
+  random_cw = 0;  
   t.every(MAC_CTRL_FREQ, _mac_fsm_control);
 }
 
