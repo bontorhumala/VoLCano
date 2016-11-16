@@ -24,10 +24,11 @@
 //#define DEBUG
 //#define DEBUG_RX
 //#define DEBUG_RX_DETECT
+//#define DEBUG_UPDATE
 //#define DEBUG_TX
 #define DEBUG_OSC
-#define RX_NODE
-//#define TX_NODE
+//#define RX_NODE
+#define TX_NODE
 //#define TX_NODE_LOOP
 //#define PROFILING
 
@@ -106,8 +107,9 @@ void _encode_zero();
 void _encode_one();
 void _encode_idle();
 int8_t _detect_edge();
-uint16_t _get_min(uint8_t *arr, uint8_t len);
-uint16_t _get_max(uint8_t *arr, uint8_t len);
+uint16_t _get_min(uint8_t *arr, uint8_t start_idx, uint8_t end_idx);
+uint16_t _get_max(uint8_t *arr, uint8_t start_idx, uint8_t end_idx);
+uint16_t _get_avg(uint8_t *arr, uint8_t start_idx, uint8_t end_idx);
 uint8_t _bits_byte(uint8_t *bits);
 void _byte_bits(uint8_t tx_byte, uint8_t *bits);
 void _push_sampling_buffer(uint16_t data);
@@ -117,7 +119,7 @@ void _empty_array(uint8_t *buff, uint8_t len);
 uint8_t test_rx[1];
 #endif
 #ifdef TX_NODE // address is 0x77
-uint8_t test_tx[1] = {0x01};
+uint8_t test_tx[1] = {0x00};
 unsigned long tx_loop_time;
 #endif
 unsigned long loop_time;
@@ -248,8 +250,12 @@ void phy_fsm_control() {
 void _phy_update() {
   _push_sampling_buffer(analogRead(rx_pin)); // sample rx_pin
   if (pulse_iter == 0) { // update tx_pin
-#ifdef DEBUG_TX
+#ifdef DEBUG_UPDATE
+#ifdef TX_NODE
+  if ((phy_state == PHY_TX_RX) || (phy_state == PHY_PREAMBLE_TX)) {
     Serial.print("eb0: "); Serial.print(encode_buffer[0]);Serial.print("eb1: "); Serial.print(encode_buffer[1]);Serial.print("ei: ");Serial.print(encode_iter & 0x01);Serial.print(", tx: "); Serial.println(encode_buffer[encode_iter & 0x01]);
+  }
+#endif
 #endif
     digitalWrite(tx_pin, encode_buffer[encode_iter & 0x01]);
     encode_iter++;
@@ -273,6 +279,7 @@ void _phy_idle() {
     Serial.println("PRE_RX");
 #endif
     phy_state = PHY_PREAMBLE_RX;
+    is_time = true; // allow immediate state change
     return;
   }  
   if ((idle_counter > PHY_SAFE_IDLE) && (tx_len > 0) && (pulse_iter == PULSE_LEN)) { // check tx buffer and ensure safe to send
@@ -281,6 +288,7 @@ void _phy_idle() {
     Serial.println("PRE_TX");
 #endif
     phy_state = PHY_PREAMBLE_TX;
+    is_time = true; // allow immediate state change
     return;
   }
 }
@@ -324,6 +332,7 @@ void _phy_preamble_rx() {
         idle_counter = 0; // reset idle_counter to hold back transmission
         rx_len = 0; // reset rx_buffer
         phy_state = PHY_RX;
+        is_time = true; // allow immediate state change
         no_edge_count = 0;
         return;
       }
@@ -332,6 +341,7 @@ void _phy_preamble_rx() {
         Serial.println("bad, IDLE");
 #endif
         phy_state = PHY_IDLE;
+        is_time = true; // allow immediate state change
         preamble_iter = 0;
         _empty_array(preamble_buffer, PREAMBLE_LEN);
       }
@@ -341,6 +351,7 @@ void _phy_preamble_rx() {
       Serial.println("strange, IDLE");
 #endif
       phy_state = PHY_IDLE;
+      is_time = true; // allow immediate state change
       preamble_iter = 0;
       _empty_array(preamble_buffer, PREAMBLE_LEN);
     }
@@ -350,6 +361,7 @@ void _phy_preamble_rx() {
     Serial.println("corrupt, PHY_IDLE");
 #endif
     phy_state = PHY_IDLE;
+    is_time = true; // allow immediate state change
   }
 }
 
@@ -375,6 +387,7 @@ void _phy_rx() {
           tx_iter = 0;
           encode_iter = 0;
           phy_state = PHY_PREAMBLE_TX;
+          is_time = true; // allow immediate state change
         }
         return;
       } else if (rx_iter == 4) { // get rx_len
@@ -389,6 +402,7 @@ void _phy_rx() {
       Serial.println("LEN, PHY_IDLE");
 #endif
       phy_state = PHY_IDLE;
+      is_time = true; // allow immediate state change
     }
   }
   if ((no_edge_count > NO_EDGE_PERIOD_LEN) && (phy_state != PHY_TX_RX)) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
@@ -396,6 +410,7 @@ void _phy_rx() {
     Serial.println("corrupt, PHY_IDLE");
 #endif
     phy_state = PHY_IDLE;
+    is_time = true; // allow immediate state change
   }
   rx_iter++;
 }
@@ -421,6 +436,7 @@ void _phy_preamble_tx() {
     Serial.println("TX_RX");
 #endif
     phy_state = PHY_TX_RX;
+    is_time = true; // allow immediate state change
   }
 }
 
@@ -439,6 +455,7 @@ void _phy_tx_rx() {
         Serial.println("IDLE");
 #endif
         phy_state = PHY_IDLE;
+        is_time = true; // allow immediate state change
 #ifdef DEBUG
         Serial.println("FINISHED TRANSMISSION");
 #endif
@@ -485,16 +502,13 @@ void _encode_zero() {
 int8_t _detect_edge() {
   int8_t in_bit = -1;
   int sample_diff = sampling_buffer[MID_BIT] - sampling_buffer[MID_BIT-1];
-  if (sample_diff < NEG_EDGE_THRESHOLD) { // falling edge
-    if (no_edge_count >= EDGE_DISTANCE) { // no edge in vicinity (i.e. not a repetition or transition)
-      in_bit = 0;
-      no_edge_count = 0;
-    }
-  } else if (sample_diff > EDGE_THRESHOLD) { // positive edge
-    if (no_edge_count >= EDGE_DISTANCE) {
-      in_bit = 1;
-      no_edge_count = 0;
-    }
+  if ((sample_diff > EDGE_THRESHOLD) && (no_edge_count >= EDGE_DISTANCE)) {
+    in_bit = 1;
+    no_edge_count = 0;
+  }
+  else if ((sample_diff < NEG_EDGE_THRESHOLD) && (no_edge_count >= EDGE_DISTANCE)) {
+    in_bit = 0;
+    no_edge_count = 0;
   }
 #ifdef DEBUG_RX_DETECT
   if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
@@ -522,9 +536,9 @@ int8_t _detect_edge() {
 }
 
 // get maximum value in an array
-uint16_t _get_max(uint16_t *arr, uint8_t len) {
+uint16_t _get_max(uint16_t *arr, uint8_t start_idx, uint8_t end_idx) {
   uint16_t max_val = 0;
-  for (uint8_t i = 0; i < len; i++) {
+  for (uint8_t i = start_idx; i < end_idx; i++) {
     if (arr[i] > max_val) {
       max_val = arr[i];
     }
@@ -533,9 +547,9 @@ uint16_t _get_max(uint16_t *arr, uint8_t len) {
 }
 
 // get minimum value in an array
-uint16_t _get_min(uint16_t *arr, uint8_t len) {
+uint16_t _get_min(uint16_t *arr, uint8_t start_idx, uint8_t end_idx) {
   uint16_t min_val = 9999;
-  for (uint8_t i = 0; i < len; i++) {
+  for (uint8_t i = start_idx; i < end_idx; i++) {
     if (arr[i] < min_val) {
       min_val = arr[i];
     }
