@@ -37,7 +37,6 @@
 #define PHY_PULSE_WIDTH 3200 // pulse width
 #define TIMER2COUNT 215 // Timer2 runs at 8us per tick, TCNT = 255 - (PHY_SAMPLE_PERIOD/8us)
 #endif
-
 #ifndef DEBUG_RX
 #define PHY_SAMPLE_PERIOD 240 // phy sensing (sampling) period
 #define PHY_PULSE_WIDTH 2400 // pulse width
@@ -121,10 +120,10 @@ void _ADC_start_conversion(int adc_pin);
 int _ADC_read_conversion();
 
 #ifdef RX_NODE // address is 0x88
-uint8_t test_rx[3];
+uint8_t test_rx[20];
 #endif
 #ifdef TX_NODE // address is 0x77
-uint8_t test_tx[3] = {0xCA, 0x87, 0x65};
+uint8_t test_tx[20] = {102, 56, 57, 62, 78, 81, 201, 17, 0, 255, 90, 102, 105, 125, 182, 127, 0, 0, 0, 76};
 #endif
 
 ISR(TIMER2_OVF_vect)
@@ -138,10 +137,10 @@ void setup() {
   Serial.begin(115200);
   _ADC_setup();
 #ifdef RX_NODE
-//  Serial.println("RX Node\n");
+  Serial.println("RX Node\n");
 #endif
 #ifdef TX_NODE
-//  Serial.println("TX Node\n");
+  Serial.println("TX Node\n");
 #endif
   phy_state = PHY_IDLE;
   tx_pin = A1;
@@ -164,7 +163,7 @@ void setup() {
 #endif
 #ifdef TX_NODE
 //  Serial.println("Transmitting\n");
-  phy_tx(test_tx, 3);
+  phy_tx(test_tx, 20);
 #endif
 }
 
