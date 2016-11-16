@@ -24,13 +24,13 @@
 #define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
 
 #define SERIAL_PLOT
-#define DEBUG
-#define DEBUG_RX
-//#define DEBUG_UPDATE
+//#define DEBUG
+//#define DEBUG_RX
+#define DEBUG_UPDATE
 //#define DEBUG_TX
-//#define DEBUG_OSC
-#define RX_NODE
-//#define TX_NODE
+#define DEBUG_OSC
+//#define RX_NODE
+#define TX_NODE
 //#define TX_NODE_LOOP
 //#define PROFILING
 
@@ -96,7 +96,7 @@ void _byte_bits(uint8_t tx_byte, uint8_t *bits);
 uint8_t test_rx[4];
 #endif
 #ifdef TX_NODE // address is 0x77
-uint8_t test_tx[4] = {0x01,0x55,0x00,0xFF};
+uint8_t test_tx[4] = {0xF0,0xF0,0xAA,0x55};
 unsigned long tx_loop_time;
 #endif
 #ifdef PROFILING
@@ -240,7 +240,16 @@ void _phy_update() {
   sampling_buffer = analogRead(rx_pin); // sample rx_pin
   // update tx_pin
 #ifdef DEBUG_UPDATE
-  Serial.print("txb: "); Serial.println(tx_bit_buffer);
+#ifdef TX_NODE
+  if ((phy_state == PHY_TX_RX) || (phy_state == PHY_PREAMBLE_TX)) {
+    Serial.print("txb: "); Serial.println(tx_bit_buffer);
+  }
+#endif
+#ifdef RX_NODE
+  if (phy_state == PHY_RX) {
+    Serial.print("sb: "); Serial.println(sampling_buffer);
+  }
+#endif
 #endif
   digitalWrite(tx_pin, tx_bit_buffer);
 }
