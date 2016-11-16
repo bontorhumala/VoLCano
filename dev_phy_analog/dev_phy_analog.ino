@@ -13,8 +13,10 @@
 //   (ok) adding preamble 01..01, according to PREAMBLE_LEN
 //   (ok) fix edge detection, previously assigning in_bit always 1 because variable is uint (never negative thus never 0)
 //   (ok) fix edge detection, edge is only considered if 0-th bit and PULSE_LEN-th bit exceeds EDGE_THRESHOLD
-// 11/11
-//   (?) able to receive bits, but really depends on timing. need to check tx output and also adc sampling period
+// 11/11- 11/16
+//   (ok) able to receive bits, but really depends on timing. need to check tx output and also adc sampling period --> improve ADC and GPIO access using direct access, avoid racing interrupt
+// 11/16
+//   (?) error after 1 session
 
 #include <stdint.h>
 
@@ -110,7 +112,6 @@ int16_t phy_rx(uint8_t *data);
 void phy_tx(uint8_t *data, uint16_t data_len);
 
 // PRIVATE
-void _phy_update();
 void _phy_idle();
 void _phy_rx();
 void _phy_tx_rx();
@@ -130,16 +131,34 @@ void _empty_array(uint8_t *buff, uint8_t len);
 void _ADC_setup();
 void _ADC_start_conversion(int adc_pin);
 int _ADC_read_conversion();
+void _reset_rx_to_idle();
 
 #ifdef RX_NODE // address is 0x88
 uint8_t test_rx[40];
 #endif
 #ifdef TX_NODE // address is 0x77
-uint8_t test_tx[40] = {102, 56, 57, 62, 78, 81, 201, 17, 0, 255, 90, 102, 105, 125, 182, 127, 0, 0, 0, 76, 102, 56, 57, 62, 105, 125, 182, 127, 0, 0, 0, 76, 78, 81, 201, 17, 0, 255, 90, 102};
+uint8_t test_tx[40] = {102, 56, 57, 62, 40, 81, 201, 17, 0, 255, 90, 102, 105, 125, 182, 127, 0, 0, 0, 76, 102, 56, 57, 62, 105, 125, 182, 127, 0, 0, 0, 76, 78, 81, 201, 17, 0, 255, 90, 102};
 #endif
 
+// sample rx pin every PHY_SAMPLE_PERIOD
+// update tx pin every PULSE_WINDOW_LEN
 ISR(TIMER2_OVF_vect)
 {
+  uint16_t adc_value = _ADC_read_conversion();
+  _ADC_start_conversion(rx_pin); 
+  _push_sampling_buffer(adc_value); // sample rx_pin
+  if (pulse_iter == 0) { // update tx_pin
+#ifdef DEBUG_TX
+    Serial.print("eb0: "); Serial.print(encode_buffer[0]);Serial.print("eb1: "); Serial.print(encode_buffer[1]);Serial.print("ei: ");Serial.print(encode_iter & 0x01);Serial.print(", tx: "); Serial.println(encode_buffer[encode_iter & 0x01]);
+#endif
+    if (encode_buffer[encode_iter & 0x01]) digitalHigh(tx_pin);
+    else digitalLow(tx_pin);
+    encode_iter++;
+    if (phy_state == PHY_IDLE) {
+      idle_counter++;
+    }
+  }
+  pulse_iter++;
   _phy_fsm_control();
   TCNT2 = TIMER2COUNT;
 }
@@ -199,26 +218,6 @@ void phy_tx(uint8_t *data, uint16_t data_len) {
   tx_iter = 0;
 }
 
-// sample rx pin every PHY_SAMPLE_PERIOD
-// update tx pin every PULSE_WINDOW_LEN
-void _phy_update() {
-  uint16_t adc_value = _ADC_read_conversion();
-  _ADC_start_conversion(rx_pin); 
-  _push_sampling_buffer(adc_value); // sample rx_pin
-  if (pulse_iter == 0) { // update tx_pin
-#ifdef DEBUG_TX
-    Serial.print("eb0: "); Serial.print(encode_buffer[0]);Serial.print("eb1: "); Serial.print(encode_buffer[1]);Serial.print("ei: ");Serial.print(encode_iter & 0x01);Serial.print(", tx: "); Serial.println(encode_buffer[encode_iter & 0x01]);
-#endif
-    if (encode_buffer[encode_iter & 0x01]) digitalHigh(tx_pin);
-    else digitalLow(tx_pin);
-    encode_iter++;
-    if (phy_state == PHY_IDLE) {
-      idle_counter++;
-    }
-  }
-  pulse_iter++;
-}
-
 // if find an edge, go to rx
 // if there is something to send, go to tx
 void _phy_idle() {
@@ -245,7 +244,7 @@ void _phy_idle() {
 }
 
 void _phy_preamble_rx() {
-  int8_t in_bit;
+  int8_t in_bit = 0;
   bool is_preamble = true;
   uint8_t i = 0;
   in_bit = _detect_edge();
@@ -269,33 +268,35 @@ void _phy_preamble_rx() {
         decode_iter++;
         idle_counter = 0; // reset idle_counter to hold back transmission
         rx_len = 0; // reset rx_buffer
-        phy_state = PHY_RX;
         no_edge_count = 0;
+        phy_state = PHY_RX;
         return;
       }
       else {
 #ifdef DEBUG_RX
         Serial.println("bad, IDLE");
 #endif
+        _reset_rx_to_idle();
         phy_state = PHY_IDLE;
-        preamble_iter = 0;
-        _empty_array(preamble_buffer, PREAMBLE_LEN);
+        return;
       }
     }
     else {
 #ifdef DEBUG
       Serial.println("strange, IDLE");
 #endif
+      _reset_rx_to_idle();
       phy_state = PHY_IDLE;
-      preamble_iter = 0;
-      _empty_array(preamble_buffer, PREAMBLE_LEN);
+      return;
     }
   }
   if ((no_edge_count > NO_EDGE_PERIOD_LEN) && (phy_state != PHY_TX_RX)) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
 #ifdef DEBUG
     Serial.println("corrupt, PHY_IDLE");
 #endif
+    _reset_rx_to_idle();
     phy_state = PHY_IDLE;
+    return;
   }
 }
 
@@ -347,7 +348,9 @@ void _phy_rx() {
 #ifdef DEBUG
       Serial.println("LEN, PHY_IDLE");
 #endif
+      _reset_rx_to_idle();
       phy_state = PHY_IDLE;
+      return;
     }
   }
 #ifdef RX_PROFILING
@@ -360,7 +363,9 @@ void _phy_rx() {
 #ifdef DEBUG
     Serial.println("corrupt, PHY_IDLE");
 #endif
+    _reset_rx_to_idle();
     phy_state = PHY_IDLE;
+    return;
   }
 #ifdef RX_PROFILING
   if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
@@ -405,12 +410,10 @@ void _phy_tx_rx() {
       _byte_bits(tx_buffer[tx_iter], tx_bits_buffer);
       if (tx_iter == tx_len) { // finished transmission
         tx_len = 0;
-#ifdef DEBUG
-        Serial.println("IDLE");
-#endif
+        _reset_rx_to_idle();
         phy_state = PHY_IDLE;
 #ifdef DEBUG
-        Serial.println("FINISHED TRANSMISSION");
+        Serial.println("Finish transmission, go to IDLE");
 #endif
         return;
       }
@@ -432,7 +435,6 @@ void _phy_tx_rx() {
 // called every PHY_SAMPLE_PERIOD
 void _phy_fsm_control() {
   noInterrupts();
-  _phy_update();
   switch (phy_state) {
     case PHY_IDLE:
       _phy_idle();
@@ -575,6 +577,7 @@ uint8_t _bits_byte(uint8_t *bits) {
   return sum;
 }
 
+// transform byte to bit array
 void _byte_bits(uint8_t tx_byte, uint8_t *bits) {
   for (uint8_t i = 0; i < BYTE_LEN; i++) {
     bits[i] = (tx_byte >> i) & 0x01;
@@ -631,5 +634,12 @@ void _ADC_start_conversion(int adc_pin){
 int _ADC_read_conversion(){
  while(bit_is_set(ADCSRA, ADSC));
  return ADC ;
+}
+
+void _reset_rx_to_idle() {
+  preamble_iter = 0;
+  _empty_array(preamble_buffer, PREAMBLE_LEN);  
+  _empty_array(decode_buffer, BYTE_LEN);
+  decode_iter = 0;  
 }
 
