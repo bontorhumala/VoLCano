@@ -16,7 +16,9 @@
 // 11/11- 11/16
 //   (ok) able to receive bits, but really depends on timing. need to check tx output and also adc sampling period --> improve ADC and GPIO access using direct access, avoid racing interrupt
 // 11/16
-//   (?) error after 1 session
+//   (ok) error after 1 session --> reset variables using _reset_rx_to_idle()
+//   (?) new design uses preamble which requires a workaround to perform full duplex
+//   (?) distance is small, only 2cm. need to fix the electrical circuit (new op amp)?
 
 #include <stdint.h>
 
@@ -66,8 +68,8 @@
 #define PULSE_LEN (PHY_PULSE_WIDTH/PHY_SAMPLE_PERIOD) // pulse window size, also used to indicate new pulse
 #define PERIOD_LEN (BIT_LEN*PULSE_LEN) // ppm window size (2 consecutive pulse)
 #define NO_EDGE_PERIOD_LEN 2*PERIOD_LEN // maximum no edge is 2*period
-#define EDGE_THRESHOLD 8 // minimum range in PULSE_WINDOW_LEN to be considered an edge 
-#define NEG_EDGE_THRESHOLD -8
+#define EDGE_THRESHOLD 10 // minimum range in PULSE_WINDOW_LEN to be considered an edge 
+#define NEG_EDGE_THRESHOLD -10
 #define MID_BIT (PULSE_LEN>>1)
 #define EDGE_DISTANCE 8
 
@@ -106,6 +108,7 @@ uint8_t no_edge_count;
 uint8_t tx_pin;
 uint8_t rx_pin;
 unsigned long timestamp;
+
 // PUBLIC
 bool phy_sense();
 int16_t phy_rx(uint8_t *data);
@@ -178,9 +181,7 @@ void setup() {
   rx_pin = A0;
   pinAsOutput(tx_pin);
   _initialize_timer();
-
 #ifdef TX_NODE
-//  Serial.println("Transmitting\n");
   phy_tx(test_tx, 40);
 #endif
 }
@@ -410,7 +411,6 @@ void _phy_tx_rx() {
       _byte_bits(tx_buffer[tx_iter], tx_bits_buffer);
       if (tx_iter == tx_len) { // finished transmission
         tx_len = 0;
-        _reset_rx_to_idle();
         phy_state = PHY_IDLE;
 #ifdef DEBUG
         Serial.println("Finish transmission, go to IDLE");
@@ -429,7 +429,7 @@ void _phy_tx_rx() {
       tx_bits_iter = 0;
     }
   }
-//  _phy_preamble_rx(); // receive data
+  // _phy_preamble_rx(); // receive data
 }
 
 // called every PHY_SAMPLE_PERIOD
