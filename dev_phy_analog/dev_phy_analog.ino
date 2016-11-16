@@ -16,16 +16,19 @@
 // 11/11
 //   (bug) able to receive bits, but really depends on timing. need to check tx output and also adc sampling period
 // 11/15
-//   (?) shorter interrupt to avoid inconsistent timing
+//   (?) shorter interrupt to avoid inconsistent timing, use preamble and level detection
 
 #include <stdint.h>
 
+#define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
+#define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
+
 #define SERIAL_PLOT
-//#define DEBUG
-//#define DEBUG_RX
-//#define DEBUG_RX_DETECT
+#define DEBUG
+#define DEBUG_RX
+//#define DEBUG_UPDATE
 //#define DEBUG_TX
-#define DEBUG_OSC
+//#define DEBUG_OSC
 #define RX_NODE
 //#define TX_NODE
 //#define TX_NODE_LOOP
@@ -36,22 +39,15 @@
 #define PHY_TX_RX 2
 #define PHY_PREAMBLE_RX 3
 #define PHY_PREAMBLE_TX 4
-#define PHY_SAMPLE_PERIOD 200 // phy sensing (sampling) period
-#define PHY_PULSE_WIDTH 2000 // pulse width
-#define TIMER2COUNT 50 // Timer2 runs at 16MHz, prescaler 64, (4 us per tick), in order to interrupt every 200us -> count 50 (CTC)
-#define PHY_SAFE_IDLE 5*PERIOD_LEN // minimum idle pulse period to ensure it is safe to transmit
+#define TIMER2COUNT 100 // Timer2 runs at 16MHz, prescaler 64, (4 us per tick), in order to interrupt every 400us -> count 100 (CTC)
+#define PHY_SAFE_IDLE 5 // minimum idle pulse period to ensure it is safe to transmit
 #define MAX_PHY_BUFFER 263 // 263 (maximum MAC packet), assume no additional PHY bytes
 #define ACK_PHY_BUFFER 8 // 8 (ACK in MAC), assume no additional PHY bytes
 #define BIT_LEN 2
-#define PREAMBLE_LEN 2
+#define PREAMBLE_LEN 6
 #define BYTE_LEN 8
-#define PULSE_LEN (PHY_PULSE_WIDTH/PHY_SAMPLE_PERIOD) // pulse window size, also used to indicate new pulse
-#define PERIOD_LEN (BIT_LEN*PULSE_LEN) // ppm window size (2 consecutive pulse)
-#define NO_EDGE_PERIOD_LEN 2*PERIOD_LEN // maximum no edge is 2*period
 #define EDGE_THRESHOLD 10 // minimum range in PULSE_WINDOW_LEN to be considered an edge 
 #define NEG_EDGE_THRESHOLD -10
-#define MID_BIT (PULSE_LEN>>1)
-#define EDGE_DISTANCE 6
 
 // rx tx buffer and iterator
 uint8_t rx_buffer[MAX_PHY_BUFFER];
@@ -63,37 +59,28 @@ uint16_t tx_iter;
 uint16_t rx_len;
 uint16_t tx_len;
 uint8_t preamble_iter;
-// encoding buffer and iterator
-uint8_t encode_buffer[BIT_LEN];
-uint8_t encode_iter;
 // bit array representation of byte in tx_buffer
 uint8_t tx_bits_buffer[BYTE_LEN];
 uint8_t tx_bits_iter;
+uint8_t tx_bit_buffer;
 // decoding bit to byte for rx_buffer
-uint8_t decode_buffer[BYTE_LEN];
-uint8_t decode_iter;
-// update sampling_buffer every PHY_SAMPLE_PERIOD
-// update tx pin every pulse period
-uint16_t sampling_buffer[PULSE_LEN];
-uint8_t sampling_iter;
-uint8_t pulse_iter;
-// safe idle pulse period
-uint8_t idle_counter;
-// time of last detected edge
-unsigned long prev_edge;
+uint8_t rx_bits_buffer[BYTE_LEN];
+uint8_t rx_bits_iter;
+// update sampling_buffer every sampling period
+uint16_t sampling_buffer;
+uint16_t prev_sampling;
 uint8_t phy_state;
-// no edge counter
-uint8_t no_edge_count;
+uint16_t rx_threshold;
+uint8_t idle_counter;
 
 uint8_t tx_pin;
 uint8_t rx_pin;
-bool is_time;
 
 // PUBLIC
 bool phy_sense();
 int16_t phy_rx(uint8_t *data);
 void phy_tx(uint8_t *data, uint16_t data_len);
-void phy_fsm_control(); // needs to be called from loop() by the application
+void _phy_fsm_control(); // needs to be called from loop() by the application
 
 // PRIVATE
 void _phy_update();
@@ -102,25 +89,20 @@ void _phy_rx();
 void _phy_tx_rx();
 void _phy_preamble_rx();
 void _phy_preamble_tx();
-void _encode_zero();
-void _encode_one();
-void _encode_idle();
-int8_t _detect_edge();
-uint16_t _get_min(uint8_t *arr, uint8_t len);
-uint16_t _get_max(uint8_t *arr, uint8_t len);
 uint8_t _bits_byte(uint8_t *bits);
 void _byte_bits(uint8_t tx_byte, uint8_t *bits);
-void _push_sampling_buffer(uint16_t data);
-void _empty_array(uint8_t *buff, uint8_t len);
 
 #ifdef RX_NODE // address is 0x88
-uint8_t test_rx[1];
+uint8_t test_rx[4];
 #endif
 #ifdef TX_NODE // address is 0x77
-uint8_t test_tx[1] = {0x01};
+uint8_t test_tx[4] = {0x01,0x55,0x00,0xFF};
 unsigned long tx_loop_time;
 #endif
+#ifdef PROFILING
 unsigned long loop_time;
+bool is_time;
+#endif
 
 #ifdef DEBUG_OSC
 uint8_t osc_pin1;
@@ -132,7 +114,12 @@ bool osc_pin2_state;
 // update pulse_iter and sample ADC every PHY_SAMPLE_PERIOD
 ISR(TIMER2_COMPA_vect)
 {
+#ifndef PROFILING
+  _phy_fsm_control();
+#endif
+#ifdef PROFILING
   is_time = true;
+#endif
 #ifdef DEBUG_OSC
   osc_pin1_state = !osc_pin1_state;
   digitalWrite(osc_pin1, osc_pin1_state);
@@ -140,7 +127,9 @@ ISR(TIMER2_COMPA_vect)
 }
 
 void setup() {
-  // put your setup code here, to run once:
+  sbi(ADCSRA, ADPS2);
+  cbi(ADCSRA, ADPS1);
+  cbi(ADCSRA, ADPS0);
   Serial.begin(115200);
 #ifdef RX_NODE
   Serial.println("RX Node\n");
@@ -163,16 +152,19 @@ void setup() {
   digitalWrite(osc_pin2, osc_pin2_state);
 #endif
 #ifdef TX_NODE
-//  Serial.println("Transmitting\n");
-  phy_tx(test_tx, 1);
+  phy_tx(test_tx, 4);
   tx_loop_time = millis();
 #endif
   _initialize_timer();
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-  phy_fsm_control();
+#ifdef PROFILING
+  if (is_time) {
+    is_time = false;
+    _phy_fsm_control();  
+  }
+#endif
 #ifdef TX_NODE_LOOP
   if ((millis() - tx_loop_time) >= 1000) {
     phy_tx(test_tx, 1);
@@ -210,213 +202,148 @@ void phy_tx(uint8_t *data, uint16_t data_len) {
 }
 
 // called every PHY_SAMPLE_PERIOD
-void phy_fsm_control() {
-  if (is_time) {
+void _phy_fsm_control() {
 #ifdef PROFILING
-    loop_time = micros();
+  loop_time = micros();
 #endif
-    is_time = false;
-    _phy_update();
-    switch (phy_state) {
-      case PHY_IDLE:
-        _phy_idle();
-        break;
-      case PHY_PREAMBLE_RX:
-        _phy_preamble_rx();
-        break;
-      case PHY_RX:
-        _phy_rx();
-        break;
-      case PHY_PREAMBLE_TX:
-        _phy_preamble_tx();
-        break;
-      case PHY_TX_RX:
-        _phy_tx_rx();
-        break;
-    }
-    if (pulse_iter == PULSE_LEN) {
-      pulse_iter = 0;
-    }
-#ifdef PROFILING    
+  _phy_update();
+  switch (phy_state) {
+    case PHY_IDLE:
+      _phy_idle();
+      break;
+    case PHY_PREAMBLE_RX:
+      _phy_preamble_rx();
+      break;
+    case PHY_RX:
+      _phy_rx();
+      break;
+    case PHY_PREAMBLE_TX:
+      _phy_preamble_tx();
+      break;
+    case PHY_TX_RX:
+      _phy_tx_rx();
+      break;
+  }
+#ifdef PROFILING
+#ifdef RX_NODE
+  if (phy_state == PHY_RX) {
+#endif
     Serial.println(micros() - loop_time);
+#ifdef RX_NODE
+  }
+#endif    
 #endif
-  }  
 }
 
-// sample rx pin every PHY_SAMPLE_PERIOD
-// update tx pin every PULSE_WINDOW_LEN
+// sample rx pin and update tx pin
 void _phy_update() {
-  _push_sampling_buffer(analogRead(rx_pin)); // sample rx_pin
-  if (pulse_iter == 0) { // update tx_pin
-#ifdef DEBUG_TX
-    Serial.print("eb0: "); Serial.print(encode_buffer[0]);Serial.print("eb1: "); Serial.print(encode_buffer[1]);Serial.print("ei: ");Serial.print(encode_iter & 0x01);Serial.print(", tx: "); Serial.println(encode_buffer[encode_iter & 0x01]);
+  sampling_buffer = analogRead(rx_pin); // sample rx_pin
+  // update tx_pin
+#ifdef DEBUG_UPDATE
+  Serial.print("txb: "); Serial.println(tx_bit_buffer);
 #endif
-    digitalWrite(tx_pin, encode_buffer[encode_iter & 0x01]);
-    encode_iter++;
-    if (phy_state == PHY_IDLE) {
-      idle_counter++;
-    }
-  }
-  pulse_iter++;
+  digitalWrite(tx_pin, tx_bit_buffer);
 }
 
 // if find an edge, go to rx
 // if there is something to send, go to tx
 void _phy_idle() {
   rx_iter = 0;
-  _encode_idle();
-  int8_t in_bit;
-  in_bit = _detect_edge();
-  if (in_bit > -1) { // check incoming bit
-    idle_counter = 0; // reset idle_counter to hold back transmission
+  int16_t sampling_diff = prev_sampling - sampling_buffer;
+  if ((sampling_diff > EDGE_THRESHOLD) || (sampling_diff < NEG_EDGE_THRESHOLD)) { // rising edge of preamble
+    idle_counter = 0;
+    preamble_buffer[preamble_iter] = sampling_buffer;
+    preamble_iter++;
+    if (preamble_iter == PREAMBLE_LEN) {
+      uint16_t sum_preamble = 0;
+      for (uint8_t i=0; i<PREAMBLE_LEN; i++) {
+        sum_preamble = sum_preamble + preamble_buffer[i];
+      }
+      rx_threshold = sum_preamble/6;
+      rx_len = 0; // reset rx_buffer
+      idle_counter = 0; // reset idle_counter to hold back transmission
+      phy_state = PHY_RX;
 #ifdef DEBUG
-    Serial.println("PRE_RX");
+      Serial.print("PHY_RX, thr: ");Serial.println(rx_threshold);
 #endif
-    phy_state = PHY_PREAMBLE_RX;
-    return;
-  }  
-  if ((idle_counter > PHY_SAFE_IDLE) && (tx_len > 0) && (pulse_iter == PULSE_LEN)) { // check tx buffer and ensure safe to send
-    encode_iter = 0;
+      return;
+    }
+  }
+  idle_counter++;
+  if ((idle_counter > PHY_SAFE_IDLE) && (tx_len > 0)) { // check tx buffer and ensure safe to send
 #ifdef DEBUG
-    Serial.println("PRE_TX");
+    Serial.println("PHY_PRE_TX");
 #endif
     phy_state = PHY_PREAMBLE_TX;
     return;
   }
+  prev_sampling = sampling_buffer;
 }
 
 void _phy_preamble_rx() {
-  int8_t in_bit;
-  bool is_preamble = true;
-  uint8_t i = 0;
-  in_bit = _detect_edge();
-  if (in_bit > -1) { // check incoming bit
-    if (preamble_iter < PREAMBLE_LEN) { // receive preamble bits
-      preamble_buffer[preamble_iter] = in_bit;
-      preamble_iter++;
-    }
-    else if (preamble_iter == PREAMBLE_LEN) { // check all preamble bits
-#ifdef DEBUG_RX
-      Serial.print("pre: ");
-#endif
-      while ((i < PREAMBLE_LEN) && is_preamble) {
-#ifdef DEBUG_RX
-        Serial.print(preamble_buffer[i]);
-#endif
-        if (preamble_buffer[i] != 0) {// preamble should be 0101...01 (depends on PREAMBLE_LEN)
-          is_preamble = false;
-        }
-        i++;
-      }
-      if (is_preamble) {
-#ifdef DEBUG_RX
-        Serial.println("ok, PHY_RX");
-#endif
-
-#ifdef DEBUG_OSC
-//        if (rx_buffer[rx_iter] == 0x00) {
-//          osc_pin2_state = !osc_pin2_state;
-//          digitalWrite(osc_pin2, osc_pin2_state);
-//        }
-#endif
-        decode_buffer[decode_iter & 0x01] = in_bit;
-        decode_iter++;
-        idle_counter = 0; // reset idle_counter to hold back transmission
-        rx_len = 0; // reset rx_buffer
-        phy_state = PHY_RX;
-        no_edge_count = 0;
-        return;
-      }
-      else {
-#ifdef DEBUG_RX
-        Serial.println("bad, IDLE");
-#endif
-        phy_state = PHY_IDLE;
-        preamble_iter = 0;
-        _empty_array(preamble_buffer, PREAMBLE_LEN);
-      }
-    }
-    else {
-#ifdef DEBUG
-      Serial.println("strange, IDLE");
-#endif
-      phy_state = PHY_IDLE;
-      preamble_iter = 0;
-      _empty_array(preamble_buffer, PREAMBLE_LEN);
-    }
-  }
-  if ((no_edge_count > NO_EDGE_PERIOD_LEN) && (phy_state != PHY_TX_RX)) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
-#ifdef DEBUG
-    Serial.println("corrupt, PHY_IDLE");
-#endif
-    phy_state = PHY_IDLE;
-  }
+  
 }
 
 // update rx_buffer and increment rx_iter
 // rx_len is in dataframe[4]
 void _phy_rx() {
-  int8_t in_bit;
-  in_bit = _detect_edge();
-  if (in_bit > -1) { // check incoming bit
+  int8_t in_bit = -1;
+  if (sampling_buffer > rx_threshold) in_bit = 1;
+  else if (sampling_buffer < rx_threshold) in_bit = 0;
+  if (in_bit > -1) {
 #ifdef DEBUG_RX
-    Serial.print("bit: ");Serial.println(in_bit);
+//    Serial.print("bit: ");Serial.println(in_bit);
 #endif
-    decode_buffer[decode_iter] = in_bit;
-    decode_iter++;
-    if (decode_iter == BYTE_LEN) {
-      rx_buffer[rx_iter] = _bits_byte(decode_buffer);
+    rx_bits_buffer[tx_bits_iter] = in_bit;
+    rx_bits_iter++;
+    if (rx_bits_iter == BYTE_LEN) {
+      rx_buffer[rx_iter] = _bits_byte(rx_bits_buffer);
 #ifdef DEBUG_RX
       Serial.print("OK, 1 byte: ");Serial.println(rx_buffer[rx_iter]);
 #endif
-      decode_iter = 0;
-      if ((rx_iter == 1) && (rx_buffer[rx_iter] == tx_buffer[1]) && (tx_len > 0)) { // if there is something to transmit to the transmitting node
+      rx_bits_iter = 0;
+      if ((rx_iter == 2) && (rx_buffer[1] == tx_buffer[2]) && (rx_buffer[2] == tx_buffer[1]) && (tx_len > 0)) { // if there is something to transmit to the transmitting node
         if (phy_state != PHY_TX_RX) { // do not reset tx_iter if already in PHY_TX_RX
           tx_iter = 0;
-          encode_iter = 0;
           phy_state = PHY_PREAMBLE_TX;
         }
         return;
       } else if (rx_iter == 4) { // get rx_len
         rx_len = rx_buffer[rx_iter];
       }
-    }
-    idle_counter = 0; // reset idle_counter to hold back transmission
-  } 
-  if (rx_iter > 4) { // rx_len has been received
-    if ((rx_iter == rx_len) && (phy_state != PHY_TX_RX)) { // finished receiving
+      if (rx_iter > 4) { // rx_len has been received
+        if ((rx_iter == rx_len) && (phy_state != PHY_TX_RX)) { // finished receiving
 #ifdef DEBUG
-      Serial.println("LEN, PHY_IDLE");
+          Serial.println("LEN, PHY_IDLE");
 #endif
-      phy_state = PHY_IDLE;
+          phy_state = PHY_IDLE;
+        }
+      }
+      rx_iter++;
     }
   }
-  if ((no_edge_count > NO_EDGE_PERIOD_LEN) && (phy_state != PHY_TX_RX)) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
+  if ((rx_iter > MAX_PHY_BUFFER) && (phy_state != PHY_TX_RX)) { // rx_len is corrupted, still in rx even if no edge is found after 1 period
 #ifdef DEBUG
     Serial.println("corrupt, PHY_IDLE");
 #endif
     phy_state = PHY_IDLE;
   }
-  rx_iter++;
 }
 
 // send preamble before entering tx_rx
 void _phy_preamble_tx() {
-#ifdef DEBUG_TX
-  Serial.print("PRETX: ");Serial.print(encode_iter & 0x01);Serial.print(", prei: ");Serial.print(preamble_iter);Serial.print(", puli: ");Serial.println(pulse_iter);
+#ifdef DEBUG_PRE_TX
+  Serial.print("PRETX: ");Serial.println(preamble_iter);
 #endif
-  if (((encode_iter & 0x01) == 0) && (pulse_iter == PULSE_LEN)) { // need to update encode_buffer at the end of encode_buffer
-    if (preamble_iter == 0) {
-      _encode_zero();
-    } else {
-      _encode_one();
-    }
-    preamble_iter++;
+  if ((preamble_iter & 0x01) == 0) {
+    tx_bit_buffer = LOW;
+  } else {
+    tx_bit_buffer = HIGH;
   }
+  preamble_iter++;
   if (preamble_iter == PREAMBLE_LEN) { // preamble finished
     preamble_iter = 0;
     tx_iter = 0;
-    encode_iter = 0;
 #ifdef DEBUG
     Serial.println("TX_RX");
 #endif
@@ -424,123 +351,38 @@ void _phy_preamble_tx() {
   }
 }
 
-// update encode_buffer and increment tx_iter
+// update tx_bit_buffer and increment tx_iter
 // meanwhile, still receive data (full duplex)
 void _phy_tx_rx() {
 #ifdef DEBUG_TX
-  Serial.print("TXRX: ");Serial.print(encode_iter & 0x01);Serial.print(", tx_bits_iter: ");Serial.print(tx_bits_iter);Serial.print(", tx_iter: ");Serial.print(tx_iter);Serial.print(", puli: ");Serial.println(pulse_iter);
+  Serial.print("TXRX: ");Serial.print(tx_bits_buffer[tx_bits_iter]);Serial.print(", tbi: ");Serial.print(tx_bits_iter);Serial.print(", tb: ");Serial.print(tx_buffer[tx_iter]);Serial.print(", tx_iter: ");Serial.println(tx_iter);
 #endif
-  if (((encode_iter & 0x01) == 0) && (pulse_iter == PULSE_LEN)) { // need to update encode_buffer at the start of a bit (end of encode_buffer)
-    if (tx_bits_iter == 0) { // start of a byte, convert byte to bits
-      _byte_bits(tx_buffer[tx_iter], tx_bits_buffer);
-      if (tx_iter == tx_len) { // finished transmission
-        tx_len = 0;
+  if (tx_bits_iter == 0) { // start of a byte, convert byte to bits
+    _byte_bits(tx_buffer[tx_iter], tx_bits_buffer);
+    if (tx_iter == tx_len) { // finished transmission
+      tx_len = 0;
 #ifdef DEBUG
-        Serial.println("IDLE");
+      Serial.println("IDLE");
 #endif
-        phy_state = PHY_IDLE;
+      phy_state = PHY_IDLE;
+      tx_bit_buffer = LOW;
 #ifdef DEBUG
-        Serial.println("FINISHED TRANSMISSION");
+      Serial.println("FINISHED TRANSMISSION");
 #endif
-        return;
-      }
-      tx_iter++;
+      return;
     }
-    if (tx_bits_buffer[tx_bits_iter] == 0) { // transmit according to tx_buffer
-      _encode_zero();
-    } else {
-      _encode_one();
-    }
-//    _encode_idle();    
-    tx_bits_iter++;
-    if (tx_bits_iter == BYTE_LEN) { // restart after transmit one byte
-      tx_bits_iter = 0;
-    }
+  }
+  if (tx_bits_buffer[tx_bits_iter] == 0) { // transmit according to tx_buffer
+    tx_bit_buffer = LOW;
+  } else {
+    tx_bit_buffer = HIGH;
+  }
+  tx_bits_iter++;
+  if (tx_bits_iter == BYTE_LEN) { // restart after transmit one byte
+    tx_bits_iter = 0;
+    tx_iter++;
   }
 //  _phy_preamble_rx(); // receive data
-}
-
-// idle
-void _encode_idle() {
-  encode_buffer[0] = LOW;
-  encode_buffer[1] = LOW;
-}
-
-// rising edge
-void _encode_one() {
-  encode_buffer[0] = LOW;
-  encode_buffer[1] = HIGH;
-}
-
-// falling edge
-void _encode_zero() {
-  encode_buffer[0] = HIGH;
-  encode_buffer[1] = LOW;
-}
-
-// detect rising (1) or falling (0) edge using range in the sampling_buffer
-// avoid transistional edge between two consecutive identical bit:
-//   i.e. 00: HIGH (falling) LOW (rising) HIGH (falling) LOW -> falling, falling
-//   ensure that the edge is detected after one PHY_PULSE_WIDTH
-int8_t _detect_edge() {
-  int8_t in_bit = -1;
-  int sample_diff = sampling_buffer[MID_BIT] - sampling_buffer[MID_BIT-1];
-  if (sample_diff < NEG_EDGE_THRESHOLD) { // falling edge
-    if (no_edge_count >= EDGE_DISTANCE) { // no edge in vicinity (i.e. not a repetition or transition)
-      in_bit = 0;
-      no_edge_count = 0;
-    }
-  } else if (sample_diff > EDGE_THRESHOLD) { // positive edge
-    if (no_edge_count >= EDGE_DISTANCE) {
-      in_bit = 1;
-      no_edge_count = 0;
-    }
-  }
-#ifdef DEBUG_RX_DETECT
-  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
-    Serial.print("sb: ");
-    for (uint8_t j = 0; j < PULSE_LEN; j++) {
-      Serial.print(sampling_buffer[j]); Serial.print(", ");
-    }
-    Serial.print("\nde: "); Serial.println(in_bit);
-  }
-  else {
-    Serial.print(in_bit);
-  }
-#endif
-#ifdef SERIAL_PLOT
-  if ((phy_state == PHY_RX) || (phy_state == PHY_PREAMBLE_RX)) {
-    Serial.print(sample_diff);
-    Serial.print(",");
-    Serial.println(in_bit);
-  }
-#endif
-  if (in_bit == -1) {
-    no_edge_count++;
-  }
-  return in_bit;
-}
-
-// get maximum value in an array
-uint16_t _get_max(uint16_t *arr, uint8_t len) {
-  uint16_t max_val = 0;
-  for (uint8_t i = 0; i < len; i++) {
-    if (arr[i] > max_val) {
-      max_val = arr[i];
-    }
-  }
-  return max_val;
-}
-
-// get minimum value in an array
-uint16_t _get_min(uint16_t *arr, uint8_t len) {
-  uint16_t min_val = 9999;
-  for (uint8_t i = 0; i < len; i++) {
-    if (arr[i] < min_val) {
-      min_val = arr[i];
-    }
-  }
-  return min_val;
 }
 
 // transform bit array to byte
@@ -556,25 +398,6 @@ uint8_t _bits_byte(uint8_t *bits) {
 void _byte_bits(uint8_t tx_byte, uint8_t *bits) {
   for (uint8_t i = 0; i < BYTE_LEN; i++) {
     bits[i] = (tx_byte >> i) & 0x01;
-  }
-}
-
-// FIFO buffer push implementation for sampling_buffer
-void _push_sampling_buffer(uint16_t data) {
-  if (sampling_iter == PULSE_LEN) {
-    for (uint8_t i = 0; i < PULSE_LEN - 1; i++) { // kick earlist sample at index 0 and shift the remaining
-      sampling_buffer[i] = sampling_buffer[i + 1];
-    }
-    sampling_buffer[PULSE_LEN - 1] = data; // add new data to last position in the buffer
-  } else {
-    sampling_buffer[sampling_iter] = data;
-    sampling_iter++;
-  }
-}
-
-void _empty_array(uint8_t *buff, uint8_t len) {
-  for (uint8_t i = 0; i < len; i++) {
-    buff[i] = 0;
   }
 }
 
