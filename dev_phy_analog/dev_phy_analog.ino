@@ -15,8 +15,6 @@
 //   (ok) fix edge detection, edge is only considered if 0-th bit and PULSE_LEN-th bit exceeds EDGE_THRESHOLD
 // 11/11
 //   (?) able to receive bits, but really depends on timing. need to check tx output and also adc sampling period
-// 11/15
-//   (ok) use CTC interrupt
 
 #include <stdint.h>
 
@@ -34,8 +32,8 @@
 #define PHY_PREAMBLE_RX 3
 #define PHY_PREAMBLE_TX 4
 #define PHY_SAMPLE_PERIOD 500 // phy sensing (sampling) period
-#define PHY_PULSE_WIDTH 2000 // pulse width
-#define TIMER2COUNT 125 // Timer2 runs at 16MHz, prescaler 64, (4 us per tick), in order to interrupt every 500us -> count 125 (CTC)
+#define PHY_PULSE_WIDTH 5000 // pulse width
+#define TIMER2COUNT 192 // Timer2 runs at 16MHz, in order to interrupt every 500us -> count 63x
 #define PHY_SAFE_IDLE 5*PERIOD_LEN // minimum idle pulse period to ensure it is safe to transmit
 #define MAX_PHY_BUFFER 263 // 263 (maximum MAC packet), assume no additional PHY bytes
 #define ACK_PHY_BUFFER 8 // 8 (ACK in MAC), assume no additional PHY bytes
@@ -45,9 +43,10 @@
 #define PULSE_LEN (PHY_PULSE_WIDTH/PHY_SAMPLE_PERIOD) // pulse window size, also used to indicate new pulse
 #define PERIOD_LEN (BIT_LEN*PULSE_LEN) // ppm window size (2 consecutive pulse)
 #define NO_EDGE_PERIOD_LEN 2*PERIOD_LEN // maximum no edge is 2*period
-#define EDGE_THRESHOLD 10 // minimum range in PULSE_WINDOW_LEN to be considered an edge 
-#define NEG_EDGE_THRESHOLD -10
+#define EDGE_THRESHOLD 8 // minimum range in PULSE_WINDOW_LEN to be considered an edge 
+#define NEG_EDGE_THRESHOLD -8
 #define MID_BIT (PULSE_LEN>>1)
+#define EDGE_DISTANCE 8
 
 // rx tx buffer and iterator
 uint8_t rx_buffer[MAX_PHY_BUFFER];
@@ -107,22 +106,27 @@ uint8_t _bits_byte(uint8_t *bits);
 void _byte_bits(uint8_t tx_byte, uint8_t *bits);
 void _push_sampling_buffer(uint16_t data);
 void _empty_array(uint8_t *buff, uint8_t len);
+void _ADC_setup();
+void _ADC_start_conversion(int adc_pin);
+int _ADC_read_conversion();
 
 #ifdef RX_NODE // address is 0x88
 uint8_t test_rx[3];
 #endif
 #ifdef TX_NODE // address is 0x77
-uint8_t test_tx[3] = {0x00, 0x01, 0xFF};
+uint8_t test_tx[3] = {0x55, 0xAA, 0xB0};
 #endif
 
-ISR(TIMER2_COMPA_vect)
+ISR(TIMER2_OVF_vect)
 {
   _phy_fsm_control();
+  TCNT2 = TIMER2COUNT;
 }
 
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
+  _ADC_setup();
 #ifdef RX_NODE
 //  Serial.println("RX Node\n");
 #endif
@@ -190,7 +194,9 @@ void phy_tx(uint8_t *data, uint16_t data_len) {
 // sample rx pin every PHY_SAMPLE_PERIOD
 // update tx pin every PULSE_WINDOW_LEN
 void _phy_update() {
-  _push_sampling_buffer(analogRead(rx_pin)); // sample rx_pin
+  uint16_t adc_value = _ADC_read_conversion();
+  _ADC_start_conversion(rx_pin); 
+  _push_sampling_buffer(adc_value); // sample rx_pin
   if (pulse_iter == 0) { // update tx_pin
 #ifdef DEBUG_TX
     Serial.print("eb0: "); Serial.print(encode_buffer[0]);Serial.print("eb1: "); Serial.print(encode_buffer[1]);Serial.print("ei: ");Serial.print(encode_iter & 0x01);Serial.print(", tx: "); Serial.println(encode_buffer[encode_iter & 0x01]);
@@ -447,12 +453,12 @@ int8_t _detect_edge() {
   int8_t in_bit = -1;
   int sample_diff = sampling_buffer[MID_BIT] - sampling_buffer[MID_BIT-1];
   if (sample_diff < NEG_EDGE_THRESHOLD) { // falling edge
-    if (no_edge_count >= 8) { // no edge in vicinity (i.e. not a repetition or transition)
+    if (no_edge_count >= EDGE_DISTANCE) { // no edge in vicinity (i.e. not a repetition or transition)
       in_bit = 0;
       no_edge_count = 0;
     }
   } else if (sample_diff > EDGE_THRESHOLD) { // positive edge
-    if (no_edge_count >= 8) {
+    if (no_edge_count >= EDGE_DISTANCE) {
       in_bit = 1;
       no_edge_count = 0;
     }
@@ -542,11 +548,33 @@ void _empty_array(uint8_t *buff, uint8_t len) {
 void _initialize_timer()
 {
   noInterrupts();
-  TCCR2A = 0x00;                // Timer2 disable interrupt
-  TCCR2B = 0x00;                // Timer2 disable interrupt
-  OCR2A = TIMER2COUNT;          // Timer2 compare match value
-  TCCR2A |= (1 << WGM21);       // Timer2 Control Reg A: Set to CTC mode
-  TCCR2B = _BV(CS22);           // Timer2 Control Reg B: Timer Prescaler set to 64
-  TIMSK2 |= (1 << OCIE2A);      // Timer2 INT Reg: Timer2 CTC Interrupt Enable
+  TCCR2B = 0x00;        //Disbale Timer2 while we set it up
+  TCNT2  = TIMER2COUNT;         //Reset Timer Count to 130 out of 255
+  TIFR2  = 0x00;        //Timer2 INT Flag Reg: Clear Timer Overflow Flag
+  TIMSK2 = 0x01;        //Timer2 INT Reg: Timer2 Overflow Interrupt Enable
+  TCCR2A = 0x00;        //Timer2 Control Reg A: Wave Gen Mode normal
+  TCCR2B = 0x05;        //Timer2 Control Reg B: Timer Prescaler set to 128
   interrupts();
 }
+
+void _ADC_setup(){
+  ADCSRA =  bit (ADEN);                      // turn ADC on
+  ADCSRA |= bit (ADPS0) |  bit (ADPS1) | bit (ADPS2);  // Prescaler of 128
+  #ifdef INT_REF
+  ADMUX  =  bit (REFS0) | bit (REFS1);    // internal 1.1v reference
+  #else
+  ADMUX  =  bit (REFS0) ;   // external 5v reference
+  #endif
+}
+
+void _ADC_start_conversion(int adc_pin){
+  ADMUX &= ~(0x07) ; //clearing enabled channels
+  ADMUX  |= (adc_pin & 0x07) ;    // AVcc and select input port
+  bitSet (ADCSRA, ADSC) ;
+}
+
+int _ADC_read_conversion(){
+ while(bit_is_set(ADCSRA, ADSC));
+ return ADC ;
+}
+
