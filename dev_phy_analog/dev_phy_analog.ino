@@ -45,11 +45,11 @@
 #define DEBUG
 #define DEBUG_RX
 //#define DEBUG_RX_DETECT
-#define RX_NODE
+//#define RX_NODE
 //#define DE_PROFILING
 //#define RX_PROFILING
 //#define DEBUG_TX
-//#define TX_NODE
+#define TX_NODE
 
 #define PHY_IDLE 0
 #define PHY_RX 1

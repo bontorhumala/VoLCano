@@ -6,15 +6,16 @@
 // 11/8
 //   (-) use https://github.com/JChristensen/Timer library to update FSM
 // 11/17
-//   (?) add guard condition to queue, start integration with test case TEST_TX_NODE and TEST_RX_NODE
+//   (_) add guard condition to queue, start integration with test case TEST_TX_NODE and TEST_RX_NODE
+//   (?) phy-mac rx can detect byte properly (tested using phy tx), phy-mac tx cannot send properly (either to phy or phy-mac rx)
 
 #include <Event.h>
 #include <Timer.h>
 #include <QueueArray.h>
 #include <util/crc16.h>
 
-//#define TEST_TX_NODE
-#define TEST_RX_NODE
+#define TEST_TX_NODE
+//#define TEST_RX_NODE
 
 // maximum packets in MAC layer. if 1 frame is 263 bytes, then MAC can only hold that one frame
 #define MAX_PACKET 256
@@ -41,8 +42,8 @@
 
 // PUBLIC
 uint8_t mac_update(); // IMPORTANT: if MAC class is used in application, this needs to be called from loop(). Otherwise, state machine wont run
-uint8_t mac_rx();
-bool mac_tx();
+uint8_t mac_rx(uint8_t *data);
+bool mac_tx(uint8_t *data, uint8_t count, uint8_t dest_addr);
 
 // dev_phy_analog
 bool phy_sense();
@@ -121,7 +122,7 @@ void setup() {
     tx_node_buffer[i] = random(255);
     Serial.print(tx_node_buffer[i]);Serial.print(F(", "));
   }
-  Serial.print(F("\n"));
+  Serial.print(F("\r\n"));
   mac_tx(tx_node_buffer, tx_node_len, DEST_ADDR);
 #endif
 #ifdef TEST_RX_NODE
@@ -139,7 +140,7 @@ void loop() {
     for (uint8_t i=0; i<rx_node_len; i++) {
       Serial.print(rx_node_buffer[i]);Serial.print(F(", "));
     }
-    Serial.print(F("\n"));
+    Serial.print(F("\r\n"));
   }
 #endif
 }

@@ -41,6 +41,10 @@
 #define isLow(P)((*(pinOfPin(P))& pinMask(P))==0)
 #define digitalState(P)((uint8_t)isHigh(P))
 
+// #define DEBUG_BLINK
+// #define DEBUG_12
+#define DEBUG_RX
+
 #define PHY_IDLE 0
 #define PHY_RX 1
 #define PHY_TX_RX 2
@@ -142,11 +146,17 @@ uint8_t test_tx[40] = {102, 56, 57, 62, 40, 81, 201, 17, 0, 255, 90, 102, 105, 1
 // update tx pin every PULSE_WINDOW_LEN
 ISR(TIMER2_OVF_vect)
 {
+#ifdef DEBUG_BLINK
   if (counter++%1000 == 0) {
     toggle_led = !toggle_led;
     if (toggle_led) digitalHigh(13);
     else digitalLow(13);
   }
+#elif DEBUG_12
+  toggle_led = !toggle_led;
+  if (toggle_led) digitalHigh(12);
+  else digitalLow(12);
+#endif
   uint16_t adc_value = _ADC_read_conversion();
   _ADC_start_conversion(rx_pin); 
   _push_sampling_buffer(adc_value); // sample rx_pin
@@ -172,7 +182,11 @@ void phy_initialize() {
   tx_pin = A1;
   rx_pin = A0;
   pinAsOutput(tx_pin);
+#ifdef DEBUG_BLINK
   pinAsOutput(13);
+#elif DEBUG_12
+  pinAsOutput(12);
+#endif
   _initialize_timer();
 }
 
