@@ -5,18 +5,22 @@
 //   (-) initial version, use QueueArray for rx and tx buffer
 // 11/8
 //   (-) use https://github.com/JChristensen/Timer library to update FSM
-// 11/16
-//   (?) integration with dev_phy_analog
+// 11/17
+//   (?) add guard condition to queue
 
 #include <Event.h>
 #include <Timer.h>
 #include <QueueArray.h>
 #include <util/crc16.h>
 
+//#define TEST_TX_NODE
+#define TEST_RX_NODE
+
+// maximum packets in MAC layer. if 1 frame is 263 bytes, then MAC can only hold that one frame
 #define MAX_PACKET 256
 #define MAX_FRAME 263 // 5+MAX_PACKET+2
 #define ACK_FRAME 8 // 5+1+2
-#define MAX_QUEUE 3
+#define MAX_QUEUE 5
 #define HEADER 0xFF
 #define MAC_IDLE 0
 #define MAC_INIT_WAIT 1
@@ -32,13 +36,19 @@
 #define TX_SENT 1
 #define TX_FAIL 2
 #define MAX_RET 3
-#define MAC_CTRL_FREQ 10 // mac control every 10 ms
+#define MAC_CTRL_FREQ 50 // mac control every 10 ms
 #define MAX_TX_QUEUE 100
 
 // PUBLIC
 uint8_t mac_update(); // IMPORTANT: if MAC class is used in application, this needs to be called from loop(). Otherwise, state machine wont run
 uint8_t mac_rx();
 bool mac_tx();
+
+// dev_phy_analog
+bool phy_sense();
+int16_t phy_rx(uint8_t *data);
+void phy_tx(uint8_t *data, uint16_t data_len);
+void phy_initialize();
 
 // PRIVATE
 struct Tx_State {
@@ -49,16 +59,20 @@ struct Tx_State {
 Tx_State tx_state[MAX_TX_QUEUE]; // unused, will be used for async or event driven notification
 uint8_t mac_state;
 uint8_t random_cw;
-uint8_t i;
+uint8_t mac_wait_iter;
 uint8_t addr;
 bool b_medium_idle;
 QueueArray <uint8_t> rx_queue;
-QueueArray <uint16_t> rx_queue_len;
-QueueArray <uint8_t> rx_ack_queue;
+uint16_t rx_queue_len[MAX_QUEUE]; // array of rx dataframe len
+uint8_t rx_queue_len_iter;
+uint8_t rx_ack_queue[MAX_QUEUE]; // array of ack
+uint8_t rx_ack_queue_iter;
 QueueArray <uint8_t> tx_queue;
 uint8_t re_tx_buffer[MAX_PACKET]; // retransmission data backup
-QueueArray <uint8_t> tx_addr_queue;
-QueueArray <uint16_t> tx_queue_len; // array of tx dataframe len
+uint8_t tx_addr_queue[MAX_QUEUE]; // array of tx destination address
+uint8_t tx_addr_queue_iter;
+uint16_t tx_queue_len[MAX_QUEUE]; // array of tx dataframe len
+uint8_t tx_queue_len_iter;
 uint16_t re_tx_data_len; // retransmission length backup
 uint8_t re_tx_addr; // retransmission address backup
 uint8_t re_count;
@@ -79,32 +93,62 @@ void _wait_ack_slot();
 void _mac_read_packet();
 void _mac_fsm_control();
 
-void setup() {
-  // PHY initialization
-  Serial.begin(115200);
-  _ADC_setup();
-#ifdef RX_NODE
-  Serial.println("RX Node\n");
+#if defined(TEST_TX_NODE) || defined(TEST_RX_NODE)
+#define BUFFER_SIZE 40
 #endif
-#ifdef TX_NODE
-  Serial.println("TX Node\n");
-#endif  
-  phy_state = PHY_IDLE;
-  tx_pin = A1;
-  rx_pin = A0;
-  pinAsOutput(tx_pin);
-  _initialize_timer();
 
-  // MAC initialization
-  addr = 0x77;
-  mac_state = MAC_IDLE;
-  random_cw = 0;  
-  t.every(MAC_CTRL_FREQ, _mac_fsm_control);
+#ifdef TEST_TX_NODE
+#define DEST_ADDR 0x02
+#define NODE_ADDR 0x01
+long tx_node_len;
+uint8_t tx_node_buffer[BUFFER_SIZE];
+#endif
+
+#ifdef TEST_RX_NODE
+#define SRC_ADDR 0x01
+#define NODE_ADDR 0x02
+uint16_t rx_node_len;
+uint8_t rx_node_buffer[BUFFER_SIZE];
+#endif
+
+void setup() {
+  Serial.begin(115200);  
+#ifdef TEST_TX_NODE
+  randomSeed(analogRead(3));
+  tx_node_len = random(3, BUFFER_SIZE);
+  Serial.print(F("mac tx: "));
+  for (uint8_t i=0; i<tx_node_len; i++) { // generate bytes
+    tx_node_buffer[i] = random(255);
+    Serial.print(tx_node_buffer[i]);Serial.print(F(", "));
+  }
+  Serial.print(F("\n"));
+  mac_tx(tx_node_buffer, tx_node_len, DEST_ADDR);
+#endif
+#ifdef TEST_RX_NODE
+  Serial.print(F("mac rx: "));
+#endif
+  phy_initialize();
+  mac_initialize();
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-  t.update();
+  mac_update();
+#ifdef TEST_RX_NODE
+  rx_node_len = mac_rx(rx_node_buffer);
+  if (rx_node_len) {
+    for (uint8_t i=0; i<rx_node_len; i++) {
+      Serial.print(rx_node_buffer[i]);Serial.print(F(", "));
+    }
+    Serial.print(F("\n"));
+  }
+#endif
+}
+
+void mac_initialize() {
+  addr = NODE_ADDR;
+  mac_state = MAC_IDLE;
+  random_cw = 0;
+  t.every(MAC_CTRL_FREQ, _mac_fsm_control);
 }
 
 uint8_t mac_update() {
@@ -115,7 +159,8 @@ uint8_t mac_update() {
 // there could be multiple PDU in the rx_queue, this function will only return the first on the queue (FIFO)
 uint8_t mac_rx(uint8_t *data) {
   uint16_t count = 0;
-  uint16_t rx_len = rx_queue_len.dequeue();
+  uint16_t rx_len = rx_queue_len[rx_queue_len_iter];
+  rx_queue_len_iter--;
   do {
     *data++ = rx_queue.dequeue();
     count++;
@@ -129,12 +174,18 @@ uint8_t mac_rx(uint8_t *data) {
 bool mac_tx(uint8_t *data, uint8_t count, uint8_t dest_addr) {
    if ((data == 0) || (count == 0)) {
      return false;
-   } else {
-     tx_queue_len.enqueue(count);
+   } 
+   if ((count + tx_queue.count()) > MAX_FRAME) {
+     return false;
+   } 
+   else {
+     tx_queue_len[tx_queue_len_iter] = count+7;
+     tx_queue_len_iter++;
      do {
        tx_queue.enqueue((uint8_t)*data++);
      } while (count--);
-     tx_addr_queue.enqueue(dest_addr);
+     tx_addr_queue[tx_addr_queue_iter] = dest_addr;
+     tx_addr_queue_iter++;
      return true;
    }
 }
@@ -166,6 +217,7 @@ void _mac_fsm_control() {
 }
 
 // read packet from PHY layer, can be ACK or data
+// drop new packet if old packet still exists
 void _mac_read_packet() {
   uint8_t mac_pdu[MAX_FRAME];
   uint8_t mac_ack_pdu[ACK_FRAME];
@@ -173,21 +225,25 @@ void _mac_read_packet() {
   uint16_t fcs = 0;
   uint16_t i=0;
   data_len = phy_rx(mac_pdu);
-  data_len = data_len - 7; // remove header and fcs
-  fcs = (mac_pdu[data_len-2]<<8) | mac_pdu[data_len-1]; // fcs are located at the end of mac_pdu
-  if ((fcs == _calculate_fcs(mac_pdu, 5+data_len)) && (mac_pdu[2] == addr)) {  
-    if (data_len == 1) { // only 1 byte, must be ACK
-      rx_ack_queue.enqueue(mac_pdu[5]);
-    } 
-    else {// larger than 1 bytes, must be data
-      rx_queue_len.enqueue(data_len);
-      do {
-        rx_queue.enqueue(mac_pdu[i+5]);
-        i++;
-      } while(data_len--);
-      // send ACK
-      _mac_create_ack(mac_ack_pdu, mac_pdu[1], mac_pdu[5]);
-      phy_tx(mac_ack_pdu, ACK_FRAME);
+  if (((data_len + rx_queue.count()) < MAX_FRAME) && (data_len > 0)) { // drop if queue is full or data_len is negative
+    fcs = (mac_pdu[data_len-2]<<8) | mac_pdu[data_len-1]; // fcs are located at the end of mac_pdu
+    data_len = data_len - 7; // remove header and fcs
+    if ((fcs == _calculate_fcs(mac_pdu, 5+data_len)) && (mac_pdu[2] == addr)) {  
+      if (data_len == 1) { // only 1 byte, must be ACK
+        rx_ack_queue[rx_ack_queue_iter] = mac_pdu[5];
+        rx_ack_queue_iter++;
+      } 
+      else {// larger than 1 bytes, must be data
+        rx_queue_len[rx_queue_len_iter] = data_len;
+        rx_queue_len_iter++;
+        do {
+          rx_queue.enqueue(mac_pdu[i+5]);
+          i++;
+        } while(data_len--);
+        // send ACK
+        _mac_create_ack(mac_ack_pdu, mac_pdu[1], mac_pdu[5]);
+        phy_tx(mac_ack_pdu, ACK_FRAME);
+      }
     }
   }
 }
@@ -234,23 +290,23 @@ void _mac_init_wait(){
 // get random contention window
 void _mac_random_cw() {
   random_cw = random(0, 16); 
+  mac_wait_iter = 0;
   mac_state = MAC_WAIT_CW;
 }
 
 // wait transmission slot according to random_cw
 void _mac_wait_cw() {
-  i = 0;
   b_medium_idle = true;
-  if ((i<=random_cw) && b_medium_idle ){ // medium has to be idle to increment cw counter
+  if ((mac_wait_iter<=random_cw) && b_medium_idle ){ // medium has to be idle to increment cw counter
     b_medium_idle = phy_sense();
     if (b_medium_idle) {
       _wait_cw_slot(1);
-      i++;
+      mac_wait_iter++;
     } else { // if medium is not idle, go back to random_cw calculation state
       mac_state = MAC_RANDOM_CW;
     }
   }
-  if (i == random_cw) {  // random_cw is reached
+  if (mac_wait_iter == random_cw) {  // random_cw is reached
     re_count = 0;
     is_ack_received = false;
     mac_state = MAC_ACCESS;
@@ -274,17 +330,17 @@ void _mac_access() {
 }
 
 void _mac_wait_ack() {
-  if ((mac_state == MAC_WAIT_ACK) && (i<135)) { // wait 134 slots
+  if ((mac_state == MAC_WAIT_ACK) && (mac_wait_iter<135)) { // wait 134 slots
     _wait_cw_slot(1);
-
-    if ( rx_ack_queue.dequeue() == (addr ^ re_tx_addr ^ re_tx_buffer[0]) ) { // correct ACK is received
+    if ( rx_ack_queue[rx_ack_queue_iter] == (addr ^ re_tx_addr ^ re_tx_buffer[0]) ) { // correct ACK is received
+      rx_ack_queue_iter--;
       is_ack_received = true;
       mac_state = MAC_IDLE;
-      i = 135; // get out of wait_ack loop
+      mac_wait_iter = 135; // get out of wait_ack loop
       memset(re_tx_buffer, 0, MAX_PACKET);
     }
   }
-  if ((i==135) && (!is_ack_received)) { // failed to receive ACK, do retransmission
+  if ((mac_wait_iter==135) && (!is_ack_received)) { // failed to receive ACK, do retransmission
     re_count++;
     mac_state = MAC_ACCESS;
   }
@@ -319,9 +375,11 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
   
   switch(tx_type) { // different PDU for transmission and retransmission
     case PDU_TX:
-      mac_pdu[2] = tx_addr_queue.dequeue(); // destination address
+      mac_pdu[2] = tx_addr_queue[tx_addr_queue_iter]; // destination address
+      tx_addr_queue_iter--;
       re_tx_addr = mac_pdu[2]; // retransmission address backup
-      mac_pdu[4] = tx_queue_len.dequeue(); // NAV or data length
+      mac_pdu[4] = tx_queue_len[tx_queue_len_iter]; // NAV or data length
+      tx_queue_len_iter--;
       re_tx_data_len = data_len = mac_pdu[4]; // retransmission data length backup and iterator
       while (data_len) { // extract mac_pdu from tx_queue
         mac_pdu[i+5] = tx_queue.dequeue();
