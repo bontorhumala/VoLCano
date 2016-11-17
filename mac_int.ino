@@ -1,4 +1,4 @@
-// By Bontor Humala
+// By Bontor Humala and Pranav Mani
 // MAC layer of Volcano
 // LOG
 // 10/31
@@ -6,8 +6,10 @@
 // 11/8
 //   (-) use https://github.com/JChristensen/Timer library to update FSM
 // 11/17
-//   (_) add guard condition to queue, start integration with test case TEST_TX_NODE and TEST_RX_NODE
-//   (?) phy-mac rx can detect byte properly (tested using phy tx), phy-mac tx cannot send properly (either to phy or phy-mac rx)
+//   (ok) add guard condition to queue, start integration with test case TEST_TX_NODE and TEST_RX_NODE
+//   (ok) phy-mac rx can detect byte properly (tested using phy tx), phy-mac tx cannot send properly (either to phy or phy-mac rx)
+// 11/17
+//    (ok)fixed retransmission, state machine, ack 
 
 #include <Event.h>
 #include <Timer.h>
@@ -170,7 +172,6 @@ uint8_t mac_rx(uint8_t *data) {
     *data++ = rx_queue.dequeue();
     count++;
     }
-//    Serial.println("O");
   } while ((!rx_queue.isEmpty()) && (rx_len--));
  
   return count;
@@ -202,7 +203,6 @@ bool mac_tx(uint8_t *data, uint8_t data_len, uint8_t dest_addr) {
 void _mac_fsm_control() {
   // read phy
   _mac_read_packet();
-//  Serial.println(mac_state);
   switch(mac_state){  
     case MAC_IDLE:
       _mac_idle();
@@ -252,7 +252,6 @@ void _mac_read_packet() {
           i++;
         } while(iter--);
         // send ACK
-        Serial.println("acksent");
         _mac_create_ack(mac_ack_pdu, mac_pdu[1], mac_pdu[5]);
         phy_tx(mac_ack_pdu, ACK_FRAME);
       }
@@ -313,7 +312,7 @@ void _mac_wait_cw() {
     b_medium_idle = phy_sense();
     if (b_medium_idle) {
       _wait_cw_slot(1);
-      mac_wait_iter++;
+      mac_wait_iter++; //fix-increment wait counter
     } else { // if medium is not idle, go back to random_cw calculation state
       mac_state = MAC_RANDOM_CW;
     }
@@ -352,6 +351,7 @@ void _mac_access() {
 void _mac_wait_ack() {
   if ((mac_state == MAC_WAIT_ACK) && (mac_wait_iter<135)) { // wait 134 slots
     _wait_cw_slot(1);
+    mac_wait_iter++;
     rx_ack_queue_iter--;
     if ( rx_ack_queue[rx_ack_queue_iter] == (addr ^ re_tx_addr ^ re_tx_buffer[0]) ) { // correct ACK is received
       is_ack_received = true;
@@ -360,7 +360,9 @@ void _mac_wait_ack() {
       memset(re_tx_buffer, 0, MAX_PACKET);
     }
   }
+  
   if ((mac_wait_iter==135) && (!is_ack_received)) { // failed to receive ACK, do retransmission
+    mac_wait_iter=0;
     re_count++;
     mac_state = MAC_ACCESS;
   }
@@ -401,7 +403,7 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
       re_tx_addr = mac_pdu[2]; // retransmission address backup
       re_tx_data_len = mac_pdu[4]; // retransmission data length backup and iterator
       data_len = mac_pdu[4];
-      for (uint8_t j=0; j<=(data_len-MAC_LEN);j++) { // extract mac_pdu from tx_queue
+      for (uint8_t j=0; j<=(data_len - MAC_LEN);j++) { // extract mac_pdu from tx_queue
         mac_pdu[i+5] = tx_queue.dequeue();
         re_tx_buffer[i] = mac_pdu[i+5]; // retransmission backup
         i++;
@@ -410,7 +412,7 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
     case PDU_RET:
       mac_pdu[2] = re_tx_addr; // destination address
       data_len = mac_pdu[4] = re_tx_data_len; // NAV or data length 
-      for (uint8_t j=0; j<data_len;j++) { // extract mac_pdu from tx_queue
+      for (uint8_t j=0; j<=(data_len - MAC_LEN);j++) { // extract mac_pdu from tx_queue
         mac_pdu[i+5] = re_tx_buffer[i];
         i++;
       }
