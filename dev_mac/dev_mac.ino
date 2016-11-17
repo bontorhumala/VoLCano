@@ -6,7 +6,7 @@
 // 11/8
 //   (-) use https://github.com/JChristensen/Timer library to update FSM
 // 11/17
-//   (?) add guard condition to queue
+//   (?) add guard condition to queue, start integration with test case TEST_TX_NODE and TEST_RX_NODE
 
 #include <Event.h>
 #include <Timer.h>
