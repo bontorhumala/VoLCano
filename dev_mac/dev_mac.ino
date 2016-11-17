@@ -190,10 +190,6 @@ bool mac_tx(uint8_t *data, uint8_t data_len, uint8_t dest_addr) {
      } while (data_len--);
      tx_addr_queue[tx_addr_queue_iter] = dest_addr;
      tx_addr_queue_iter++;
-#ifdef DEBUG_MAC_TX
-     Serial.print(F("aq "));Serial.print(tx_addr_queue[tx_addr_queue_iter-1]);Serial.print(F(", ql "));Serial.println(tx_queue_len[tx_queue_len_iter-1]);
-     Serial.print(F("taq "));Serial.print(tx_addr_queue_iter);Serial.print(F(", tql "));Serial.println(tx_queue_len_iter);
-#endif
      return true;
    }
 }
@@ -390,9 +386,6 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
   mac_pdu[3] = 0x00; // RESERVED
   switch(tx_type) { // different PDU for transmission and retransmission
     case PDU_TX:
-#ifdef DEBUG_MAC_TX
-      Serial.print(F("PDU_TX "));
-#endif
       tx_addr_queue_iter--;
       tx_queue_len_iter--;
       mac_pdu[2] = tx_addr_queue[tx_addr_queue_iter]; // destination address
@@ -400,20 +393,11 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
       re_tx_addr = mac_pdu[2]; // retransmission address backup
       re_tx_data_len = mac_pdu[4]; // retransmission data length backup and iterator
       data_len = mac_pdu[4];
-#ifdef DEBUG_MAC_TX
-      Serial.print(F("for "));Serial.println(data_len);
-#endif
       for (uint8_t j=0; j<=(data_len-MAC_LEN);j++) { // extract mac_pdu from tx_queue
         mac_pdu[i+5] = tx_queue.dequeue();
-#ifdef DEBUG_MAC_TX
-        Serial.print(mac_pdu[i+5]);Serial.print(F(", "));
-#endif
         re_tx_buffer[i] = mac_pdu[i+5]; // retransmission backup
         i++;
       }
-#ifdef DEBUG_MAC_TX
-      Serial.println(F("fin"));
-#endif
       break;
     case PDU_RET:
       mac_pdu[2] = re_tx_addr; // destination address
