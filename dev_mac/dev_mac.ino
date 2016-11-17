@@ -16,11 +16,14 @@
 
 #define TEST_TX_NODE
 //#define TEST_RX_NODE
+//#define DEBUG_MAC_TX
+//#define DEBUG_MAC_RX
 
 // maximum packets in MAC layer. if 1 frame is 263 bytes, then MAC can only hold that one frame
 #define MAX_PACKET 256
-#define MAX_FRAME 263 // 5+MAX_PACKET+2
-#define ACK_FRAME 8 // 5+1+2
+#define MAX_FRAME MAC_LEN+MAX_PACKET // 5+MAX_PACKET+2
+#define ACK_FRAME MAC_LEN+1 // 5+1+2
+#define MAC_LEN 7 // 5+2
 #define MAX_QUEUE 5
 #define HEADER 0xFF
 #define MAC_IDLE 0
@@ -43,7 +46,7 @@
 // PUBLIC
 uint8_t mac_update(); // IMPORTANT: if MAC class is used in application, this needs to be called from loop(). Otherwise, state machine wont run
 uint8_t mac_rx(uint8_t *data);
-bool mac_tx(uint8_t *data, uint8_t count, uint8_t dest_addr);
+bool mac_tx(uint8_t *data, uint8_t data_len, uint8_t dest_addr);
 
 // dev_phy_analog
 bool phy_sense();
@@ -172,21 +175,25 @@ uint8_t mac_rx(uint8_t *data) {
 // application layer uses this function to fill mac buffer
 // transmission attempt is non blocking (i.e. can send several times without waiting)
 // maximum retries defined by MAX_RET
-bool mac_tx(uint8_t *data, uint8_t count, uint8_t dest_addr) {
-   if ((data == 0) || (count == 0)) {
+bool mac_tx(uint8_t *data, uint8_t data_len, uint8_t dest_addr) {
+   if ((data == 0) || (data_len == 0)) {
      return false;
    } 
-   if ((count + tx_queue.count()) > MAX_FRAME) {
+   if ((data_len + tx_queue.count()) > MAX_FRAME) {
      return false;
    } 
    else {
-     tx_queue_len[tx_queue_len_iter] = count+7;
+     tx_queue_len[tx_queue_len_iter] = data_len+MAC_LEN;
      tx_queue_len_iter++;
      do {
        tx_queue.enqueue((uint8_t)*data++);
-     } while (count--);
+     } while (data_len--);
      tx_addr_queue[tx_addr_queue_iter] = dest_addr;
      tx_addr_queue_iter++;
+#ifdef DEBUG_MAC_TX
+     Serial.print(F("aq "));Serial.print(tx_addr_queue[tx_addr_queue_iter-1]);Serial.print(F(", ql "));Serial.println(tx_queue_len[tx_queue_len_iter-1]);
+     Serial.print(F("taq "));Serial.print(tx_addr_queue_iter);Serial.print(F(", tql "));Serial.println(tx_queue_len_iter);
+#endif
      return true;
    }
 }
@@ -228,7 +235,7 @@ void _mac_read_packet() {
   data_len = phy_rx(mac_pdu);
   if (((data_len + rx_queue.count()) < MAX_FRAME) && (data_len > 0)) { // drop if queue is full or data_len is negative
     fcs = (mac_pdu[data_len-2]<<8) | mac_pdu[data_len-1]; // fcs are located at the end of mac_pdu
-    data_len = data_len - 7; // remove header and fcs
+    data_len = data_len - MAC_LEN; // remove header and fcs
     if ((fcs == _calculate_fcs(mac_pdu, 5+data_len)) && (mac_pdu[2] == addr)) {  
       if (data_len == 1) { // only 1 byte, must be ACK
         rx_ack_queue[rx_ack_queue_iter] = mac_pdu[5];
@@ -320,11 +327,12 @@ void _mac_access() {
   bool is_retx = false;
   uint16_t data_len;
   if (re_count == 0) { // first transmission attempt
-    _mac_create_pdu(mac_pdu, PDU_TX);
+    data_len = _mac_create_pdu(mac_pdu, PDU_TX);
   } else if ((re_count>0) && (re_count < MAX_RET)){ // retransmission
-    _mac_create_pdu(mac_pdu, PDU_RET);
+    data_len = _mac_create_pdu(mac_pdu, PDU_RET);
   } else { // failed to send, ignore the packet and move on
     mac_state = MAC_IDLE;
+    return;
   }
   phy_tx(mac_pdu, 5+data_len+2);
   mac_state = MAC_WAIT_ACK;
@@ -373,29 +381,39 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
   mac_pdu[0] = HEADER; // header
   mac_pdu[1] = addr;
   mac_pdu[3] = 0x00; // RESERVED
-  
   switch(tx_type) { // different PDU for transmission and retransmission
     case PDU_TX:
-      mac_pdu[2] = tx_addr_queue[tx_addr_queue_iter]; // destination address
+#ifdef DEBUG_MAC_TX
+      Serial.print(F("PDU_TX "));
+#endif
       tx_addr_queue_iter--;
-      re_tx_addr = mac_pdu[2]; // retransmission address backup
-      mac_pdu[4] = tx_queue_len[tx_queue_len_iter]; // NAV or data length
       tx_queue_len_iter--;
-      re_tx_data_len = data_len = mac_pdu[4]; // retransmission data length backup and iterator
-      while (data_len) { // extract mac_pdu from tx_queue
+      mac_pdu[2] = tx_addr_queue[tx_addr_queue_iter]; // destination address
+      mac_pdu[4] = tx_queue_len[tx_queue_len_iter]; // NAV or data length
+      re_tx_addr = mac_pdu[2]; // retransmission address backup
+      re_tx_data_len = mac_pdu[4]; // retransmission data length backup and iterator
+      data_len = mac_pdu[4];
+#ifdef DEBUG_MAC_TX
+      Serial.print(F("for "));Serial.println(data_len);
+#endif
+      for (uint8_t j=0; j<=(data_len-MAC_LEN);j++) { // extract mac_pdu from tx_queue
         mac_pdu[i+5] = tx_queue.dequeue();
+#ifdef DEBUG_MAC_TX
+        Serial.print(mac_pdu[i+5]);Serial.print(F(", "));
+#endif
         re_tx_buffer[i] = mac_pdu[i+5]; // retransmission backup
         i++;
-        data_len--;
       }
+#ifdef DEBUG_MAC_TX
+      Serial.println(F("fin"));
+#endif
       break;
     case PDU_RET:
       mac_pdu[2] = re_tx_addr; // destination address
       data_len = mac_pdu[4] = re_tx_data_len; // NAV or data length 
-      while (data_len) { // extract mac_pdu from tx_queue
+      for (uint8_t j=0; j<data_len;j++) { // extract mac_pdu from tx_queue
         mac_pdu[i+5] = re_tx_buffer[i];
         i++;
-        data_len--;
       }
       break;
     default:
@@ -405,6 +423,13 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
   fcs = _calculate_fcs(mac_pdu, 5+re_tx_data_len);
   mac_pdu[4+i] = (fcs >> 8) & 0xFF;
   mac_pdu[4+i+1] = fcs & 0xFF;
+#ifdef DEBUG_MAC_TX
+  Serial.print(F("pdu "));
+  for (uint8_t i=0;i<re_tx_data_len;i++) {
+    Serial.print(mac_pdu[i]);Serial.print(F(", "));
+  }
+  Serial.print(F("\n")); 
+#endif
   return re_tx_data_len;
 }
 
