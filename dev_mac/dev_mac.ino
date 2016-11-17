@@ -16,7 +16,7 @@
 
 #define TEST_TX_NODE
 //#define TEST_RX_NODE
-//#define DEBUG_MAC_TX
+#define DEBUG_MAC_TX
 //#define DEBUG_MAC_RX
 
 // maximum packets in MAC layer. if 1 frame is 263 bytes, then MAC can only hold that one frame
@@ -328,13 +328,20 @@ void _mac_access() {
   uint16_t data_len;
   if (re_count == 0) { // first transmission attempt
     data_len = _mac_create_pdu(mac_pdu, PDU_TX);
+#ifdef DEBUG_MAC_TX
+    Serial.print(F("pdu "));
+    for (uint8_t i=0;i<data_len;i++) {
+      Serial.print(mac_pdu[i]);Serial.print(F(", "));
+    }
+    Serial.print(F("\n")); 
+#endif
   } else if ((re_count>0) && (re_count < MAX_RET)){ // retransmission
     data_len = _mac_create_pdu(mac_pdu, PDU_RET);
   } else { // failed to send, ignore the packet and move on
     mac_state = MAC_IDLE;
     return;
   }
-  phy_tx(mac_pdu, 5+data_len+2);
+  phy_tx(mac_pdu, data_len);
   mac_state = MAC_WAIT_ACK;
 }
 
@@ -423,13 +430,6 @@ uint16_t _mac_create_pdu(uint8_t mac_pdu[], uint8_t tx_type) {
   fcs = _calculate_fcs(mac_pdu, 5+re_tx_data_len);
   mac_pdu[4+i] = (fcs >> 8) & 0xFF;
   mac_pdu[4+i+1] = fcs & 0xFF;
-#ifdef DEBUG_MAC_TX
-  Serial.print(F("pdu "));
-  for (uint8_t i=0;i<re_tx_data_len;i++) {
-    Serial.print(mac_pdu[i]);Serial.print(F(", "));
-  }
-  Serial.print(F("\n")); 
-#endif
   return re_tx_data_len;
 }
 
