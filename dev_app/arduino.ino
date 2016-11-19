@@ -80,6 +80,8 @@ const String stickers[] = {"BQADAgADvwADlIB3BSO3_Hx3PVABAg",   // Meow Nya Stick
   "BQADBAADCQQAAhmm3wABh7ovFpyee0oC", // Conan OK - 3
   "BQADBAADWgQAAhmm3wABLOucTa947x4C", // Bye bye conan - 4
   "BQADBAADGAQAAhmm3wABrZ4fZ5QcTSYC", // Hai conan - 5
+  "BQADAgAEBQACYyviCQXAY0t2nQWlA", // Bye obama - 6
+  "BQADAgAD0wQAAmMr4glSNeHBA4HAMAI", // Hi trump - 7
 };
 
 bool ledStatus = false;
@@ -93,10 +95,10 @@ String pending_chat_id = "";
 bool waitingReply = false;
 
 // Initialize WiFi connection to the router
-//const char* ssid = "Redmi";
-//const char* passwd = "12345678";
-const char* ssid = "TP-LINK_721458";
-const char* passwd = "51827380";
+const char* ssid = "Redmi";
+const char* passwd = "12345678";
+//const char* ssid = "TP-LINK_721458";
+//const char* passwd = "51827380";
 
 
 // Create objects
@@ -106,7 +108,7 @@ UniversalTelegramBot bot(BOTtoken, client);
 
 // Software Serial
 // GPIO 12 (D6) and 14 (D5)
-SoftwareSerial swSer(14, 12, false, 256);
+SoftwareSerial swSer(14, 12, false, 256); // RX (D5), TX (D6)
 
 // timing
 unsigned long cur_time;
@@ -120,7 +122,7 @@ char dst_node_id = NODE_GATEWAY_ID;
 
 void setup() {
   Serial.begin(115200);
-  swSer.begin(115200);
+  swSer.begin(9600);
 
   // Wait for serial port initialization
   while (!Serial);
@@ -153,18 +155,21 @@ void setup() {
 }
 
 void loop() {
-  // Get update from telegram server
-  if(millis() - cur_time >= UPDATE_INTERVAL_MS)
+  // Get update from telegram server only if we are not waiting reply
+  if(!waitingReply)
   {
-    int numNewMessages = bot.getUpdates(bot.last_message_recived + 1);
-    while(numNewMessages) {
-      Serial.println("got response");
-      handleNewMessages(numNewMessages);
-      numNewMessages = bot.getUpdates(bot.last_message_recived + 1);
-    }
+    if(millis() - cur_time >= UPDATE_INTERVAL_MS)
+    {
+      int numNewMessages = bot.getUpdates(bot.last_message_recived + 1);
+      while(numNewMessages) {
+        Serial.println("got response");
+        handleNewMessages(numNewMessages);
+        numNewMessages = bot.getUpdates(bot.last_message_recived + 1);
+      }
 
-    // update time
-    cur_time = millis();
+      // update time
+      cur_time = millis();
+    }
   }
 
   // Get update from software serial
@@ -172,7 +177,45 @@ void loop() {
   // finished reading data
   if(buf_in_len > 0)
   {
+    // print for debugging
+    {
+      int i;
+      for(i=0; i<buf_in_len; i++)
+      {
+        Serial.print(buf_in[i], HEX);
+        Serial.print(" ");
+      }
+      Serial.println();
+    }
     switch (cmd_in) {
+      case CMD_GREETING_REPLY:
+        // Check source
+        switch(buf_in[0]) {
+          case NODE_1_ID:
+            bot.sendSticker(pending_chat_id, stickers[7]);
+            break;
+          case NODE_2_ID:
+            bot.sendSticker(pending_chat_id, stickers[1]);
+            break;
+          default:
+            bot.sendSimpleMessage(pending_chat_id, "Receiving from invalid node ID\n", "");
+            break;
+        }
+        break;
+      case CMD_BYE_REPLY:
+        // Check source
+        switch(buf_in[0]) {
+          case NODE_1_ID:
+            bot.sendSticker(pending_chat_id, stickers[6]);
+            break;
+          case NODE_2_ID:
+            bot.sendSticker(pending_chat_id, stickers[0]);
+            break;
+          default:
+            bot.sendSimpleMessage(pending_chat_id, "Receiving from invalid node ID\n", "");
+            break;
+        }
+        break;
       case CMD_STATUS_REPLY:
         // Check source
         switch(buf_in[0]) {
@@ -182,25 +225,27 @@ void loop() {
           case NODE_2_ID:
             bot.sendSimpleMessage(pending_chat_id, "Node " + String(NODE_2_ID) + " -- OK\n", "");
             break;
-        }
-        break;
-      case CMD_GREETING_REPLY:
-        // Check source
-        switch(buf_in[0]) {
-          case NODE_1_ID:
-            bot.sendSticker(pending_chat_id, stickers[0]);
-            break;
-          case NODE_2_ID:
-            bot.sendSticker(pending_chat_id, stickers[1]);
+          default:
+            bot.sendSimpleMessage(pending_chat_id, "Receiving from invalid node ID\n", "");
             break;
         }
         break;
+      case CMD_SPEEDTEST_REPLY:
+        String msg;
+        msg = "Node-" + String(buf_in[0]) + " to Node-" + String(buf_in[1]) + " (roundtrip): " + buf_in[2] + " bps\n";
+        bot.sendSimpleMessage(pending_chat_id, msg, "");
+        break;
+      // default:
+      //   break;
     }
     sendDefaultMessage(pending_chat_id);
+    waitingReply = false;
   } else if(buf_in_len == -1) {
     Serial.println("Error receiving data from node");
+    buf_in_len = 0;
     bot.sendSimpleMessage(pending_chat_id, "Internal communication error", "");
     sendDefaultMessage(pending_chat_id);
+    waitingReply = false;
   }
 
   // Check timeout
@@ -266,6 +311,7 @@ void handleNewMessages(int numNewMessages) {
         else  {
           // Invalid command
           bot.sendSticker(chat_id, stickers[2]);
+          sendDefaultMessage(chat_id);
         }
         break;
 
@@ -273,6 +319,7 @@ void handleNewMessages(int numNewMessages) {
         if (telegram_cmd == "/greeting") {
           if(text == "0") {
             bot.sendSticker(chat_id, stickers[5]);
+            sendDefaultMessage(chat_id);
           } else {
             char buff[] = {NODE_GATEWAY_ID, text.toInt()};
             sendToSoftwareSerial(CMD_GREETING_REQUEST, buff);
@@ -285,6 +332,7 @@ void handleNewMessages(int numNewMessages) {
         {
           if(text == "0") {
             bot.sendSticker(chat_id, stickers[4]);
+            sendDefaultMessage(chat_id);
           } else {
             char buff[] = {NODE_GATEWAY_ID, text.toInt()};
             sendToSoftwareSerial(CMD_BYE_REQUEST, buff);
@@ -297,6 +345,7 @@ void handleNewMessages(int numNewMessages) {
         {
           if(text == "0") {
             bot.sendSimpleMessage(chat_id, "Node " + String(NODE_GATEWAY_ID) + " (GATEWAY) -- OK \n", "");
+            sendDefaultMessage(chat_id);
           } else {
             char buff[] = {NODE_GATEWAY_ID, text.toInt()};
             sendToSoftwareSerial(CMD_STATUS_REQUEST, buff);
@@ -310,26 +359,31 @@ void handleNewMessages(int numNewMessages) {
           dst_node_id = text.toInt();
           sendSourceNode(chat_id);
           telegram_state = WAIT_TELE_ARG_2;
-          sendDefaultMessage(chat_id);
           break;
         }
         else
         {
           bot.sendSimpleMessage(chat_id, "Invalid command :( \n", "");
+          sendDefaultMessage(chat_id);
         }
 
-        sendDefaultMessage(chat_id);
         telegram_state = WAIT_TELE_CMD;
         break;
 
       case WAIT_TELE_ARG_2:
         if (telegram_cmd == "/speedtest") {
           src_node_id = text.toInt();
-          char buff[] = {src_node_id, dst_node_id};
-          sendToSoftwareSerial(CMD_SPEEDTEST_REQUEST, buff);
-          pending_chat_id = chat_id;
-          timeout_time = millis();
-          waitingReply = true;
+          // Check if dst == src, if yes no need to send
+          if(dst_node_id == src_node_id)
+          {
+            bot.sendSimpleMessage(chat_id, "Source node is equal to destination node", "");
+          } else {
+            char buff[] = {src_node_id, dst_node_id};
+            sendToSoftwareSerial(CMD_SPEEDTEST_REQUEST, buff);
+            pending_chat_id = chat_id;
+            timeout_time = millis();
+            waitingReply = true;
+          }
         }
 
         sendDefaultMessage(chat_id);
@@ -373,7 +427,7 @@ void sendToSoftwareSerial(char cmd, char *data)
   int i;
   int len = cmdToLen(cmd);
   swSer.write(HEADER_SYMBOL);
-  swSer.write(len);
+  swSer.write(cmd);
   for(i=0; i<len; i++)
   {
     swSer.write(data[i]);
@@ -383,36 +437,43 @@ void sendToSoftwareSerial(char cmd, char *data)
 // return len, non-blocking mode
 int readSoftwareSerial(char *cmd, char *data)
 {
-  static int len = 0;
+  int len = 0;
+  int data_len_in = 0;
 
   if(swSer.available())
   {
     static char swState = WAIT_HEADER;
     static int counter = 0;
+    unsigned char c;
+
+    c = swSer.read();
+    Serial.println(c, HEX);
 
     switch(swState)
     {
       case WAIT_HEADER:
-        if(swSer.read() == HEADER_SYMBOL)
-          len = 0;
+        if(c == HEADER_SYMBOL)
           swState = WAIT_CMD;
         break;
       case WAIT_CMD:
-        *cmd = swSer.read();
+        *cmd = c;
         swState = WAIT_DATA;
         break;
       case WAIT_DATA:
-        data[counter] = swSer.read();
+        data[counter] = c;
         counter++;
-        len = cmdToLen(*cmd);
-        if(len != -1)
+        // Check invalid command
+        data_len_in = cmdToLen(*cmd);
+        if(data_len_in != -1)
         {
-          if(counter == len) {
+          if(counter == data_len_in) {
             len = counter;
+            counter = 0;
             swState = WAIT_HEADER;
           }
         } else {
           len = -1; // error
+          counter = 0;
           swState = WAIT_HEADER;
         }
         break;
@@ -427,17 +488,29 @@ int cmdToLen(char cmd)
   int len = -1;
   switch(cmd)
   {
+    case CMD_GREETING_REQUEST:
+      len = CMD_GREETING_REQUEST_LEN;
+      break;
+    case CMD_GREETING_REPLY:
+      len = CMD_GREETING_REPLY_LEN;
+      break;
+    case CMD_BYE_REQUEST:
+      len = CMD_BYE_REQUEST_LEN;
+      break;
+    case CMD_BYE_REPLY:
+      len = CMD_BYE_REPLY_LEN;
+      break;
     case CMD_STATUS_REQUEST:
       len = CMD_STATUS_REQUEST_LEN;
       break;
     case CMD_STATUS_REPLY:
       len = CMD_STATUS_REPLY_LEN;
       break;
-    case CMD_GREETING_REQUEST:
-      len = CMD_GREETING_REQUEST_LEN;
+    case CMD_SPEEDTEST_REQUEST:
+      len = CMD_SPEEDTEST_REQUEST_LEN;
       break;
-    case CMD_GREETING_REPLY:
-      len = CMD_GREETING_REPLY_LEN;
+    case CMD_SPEEDTEST_REPLY:
+      len = CMD_SPEEDTEST_REPLY_LEN;
       break;
   }
   return len;
