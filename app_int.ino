@@ -34,23 +34,18 @@
 #define NODE_2_ID         2
 
 // Current node ID
-#define THIS_NODE_ID      NODE_GATEWAY_ID
-//#define THIS_NODE_ID      NODE_1_ID
+//#define THIS_NODE_ID      NODE_GATEWAY_ID
+#define THIS_NODE_ID      NODE_1_ID
 //#define THIS_NODE_ID      NODE_2_ID
 
 // buffer software serial
 #define MAX_DATA_RX_BUFF    20
 
-// buffer VolCano
-#define MAX_RX_BUFF_VOLCANO 20
-#define MAX_TX_BUFF_VOLCANO 20
-
 // timeout
-#define TIMEOUT_MS          3000
+#define TIMEOUT_MS          6000
 
 // timeout
 #if (THIS_NODE_ID == NODE_GATEWAY_ID)
-unsigned long timeout_softserial_time;
 #endif  /* if (THIS_NODE_ID == NODE_GATEWAY_ID) */
 unsigned long timeout_volcano_time;
 
@@ -63,13 +58,10 @@ SoftwareSerial swSer(10, 11); // RX (10), TX (11)
 char buf_in[MAX_DATA_RX_BUFF] = {0};
 char cmd_in;
 int buf_in_len = 0;
-bool waitingReply_softserial = false;
 #endif  /* if (THIS_NODE_ID == NODE_GATEWAY_ID) */
 
 // Global variables for VolCano comm
 bool waitingReply_volcano = false;
-//char buff_rx_volcano[MAX_RX_BUFF_VOLCANO];
-//char buff_tx_volcano[MAX_TX_BUFF_VOLCANO];
 char src_node_id = NODE_GATEWAY_ID;
 char dst_node_id = NODE_GATEWAY_ID;
 
@@ -77,8 +69,8 @@ void mac_initialize();
 uint8_t mac_update();
 uint8_t mac_rx(uint8_t *data);
 bool mac_tx(uint8_t *data, uint8_t data_len, uint8_t dest_addr);
-uint8_t rx_node_buffer_app[BUFFER_SIZE];
-uint8_t tx_node_buffer_app[BUFFER_SIZE];
+uint8_t rx_node_buffer_app[BUFFER_SIZE] = {0};
+uint8_t tx_node_buffer_app[BUFFER_SIZE] = {0};
 uint8_t tx_node_length;
 
 void setup() {
@@ -99,9 +91,6 @@ void setup() {
   phy_initialize();
   mac_initialize();
   // Set initial timer
-#if (THIS_NODE_ID == NODE_GATEWAY_ID)
-  timeout_softserial_time = millis();
-#endif  /* if (THIS_NODE_ID == NODE_GATEWAY_ID) */
   timeout_volcano_time = millis();
 }
 
@@ -230,12 +219,14 @@ void checkUpdateSoftwareSerial()
           src_node_id = buf_in[0];
           dst_node_id = buf_in[1];
           // TODO: Send to another node through mac layer
-          // ...
-          randomSeed(analogRead(3));
-          tx_node_length = random(3, BUFFER_SIZE);
-          Serial.print(F("[APP} mac tx: "));
+          // Packet length
+          tx_node_length = cmdToLen(cmd_in) + 1;
+          Serial.print(F("[App] mac tx: "));
+          // Command - data[0]
+          tx_node_buffer_app[0] = cmd_in;
+          // Data
+          memcpy((char *)&tx_node_buffer_app[1], buf_in, tx_node_length - 1);
           for (uint8_t i=0; i<tx_node_length; i++) { // generate bytes
-              tx_node_buffer_app[i] = random(255);
               Serial.print(tx_node_buffer_app[i]);Serial.print(F(", "));
           }
           Serial.print(F("\r\n"));
@@ -245,11 +236,11 @@ void checkUpdateSoftwareSerial()
           timeout_volcano_time = millis();
           break;
         default:
-          Serial.println("Error invalid command from gateway");
+          Serial.println(F("Error invalid command from gateway"));
           break;
       }
     } else if(buf_in_len == -1) {
-      Serial.println("Error receiving data from gateway");
+      Serial.println(F("Error receiving data from gateway"));
     }
   }
 }
@@ -262,25 +253,94 @@ void checkCommVolcano()
   // .... Whenever data from volcano is avaliable, then process it
   uint16_t rx_node_length = mac_rx(rx_node_buffer_app);
   if (rx_node_length) {
+    Serial.println(F("Received from node"));
     for (uint8_t i=0; i<rx_node_length; i++) {
       Serial.print(rx_node_buffer_app[i]);Serial.print(F(", "));
     }
     Serial.print(F("\r\n"));
-    char buff[] = {THIS_NODE_ID, src_node_id};
+    handleRxCommand(rx_node_buffer_app, rx_node_length);
+
 #if (THIS_NODE_ID == NODE_GATEWAY_ID)
-    sendToSoftwareSerial(CMD_GREETING_REPLY, buff);
     timeout_volcano_time = millis();
-    waitingReply_volcano = false;
+//    handleRxCommandSS(rx_node_buffer_app, rx_node_length);
 #endif  /* if (THIS_NODE_ID == NODE_GATEWAY_ID) */  
   }
 
+#if (THIS_NODE_ID == NODE_GATEWAY_ID)
   // Check for communication timeout on VLC comm
   if(waitingReply_volcano)
   {
     if(millis() - timeout_volcano_time > TIMEOUT_MS)
     {
-      Serial.println("Error VoLCano communication timeout");
+      Serial.println(F("Error VoLCano communication timeout"));
       waitingReply_volcano = false;
     }
   }
+#endif  /* if (THIS_NODE_ID == NODE_GATEWAY_ID) */  
 }
+
+void handleRxCommand(char *buff, int len)
+{
+  // Command message
+  unsigned char cmd_in = buff[0];
+  int cmd_len;
+
+  Serial.println(cmd_in);
+  switch (cmd_in) {
+    case CMD_GREETING_REQUEST:
+      tx_node_buffer_app[0] = CMD_GREETING_REPLY;
+      break;
+    case CMD_BYE_REQUEST:
+      tx_node_buffer_app[0] = CMD_BYE_REPLY;
+      break;
+    case CMD_STATUS_REQUEST:
+      tx_node_buffer_app[0] = CMD_STATUS_REPLY;
+      break;
+    case CMD_SPEEDTEST_REQUEST:
+      tx_node_buffer_app[0] = CMD_SPEEDTEST_REPLY;
+      break;
+    default:
+      return;   // exit
+  }
+  cmd_len = cmdToLen(cmd_in);
+  
+  tx_node_buffer_app[1] = THIS_NODE_ID;   // src
+  tx_node_buffer_app[2] = buff[1];        // dst
+  // Check data length
+  if(len > 1) memcpy((char *)&tx_node_buffer_app[3], (char *)&buff[2], len - 2);  // other data
+  
+  Serial.print(F("[App] mac tx after rx: "));
+  for (uint8_t i=0; i<tx_node_length; i++) { // generate bytes
+      Serial.print(tx_node_buffer_app[i]);Serial.print(F(", "));
+  }
+  Serial.print(F("\r\n"));
+  
+  // TODO: Send to another node through mac layer
+  // send to other nodes
+  mac_tx(tx_node_buffer_app, cmd_len, buff[1]);
+}
+
+#if (THIS_NODE_ID == NODE_GATEWAY_ID)
+void handleRxCommandSS(char *buff, int len)
+{
+  // Command message
+  unsigned char cmd_in = buff[0];
+  int cmd_len;
+  char buff_out[5];
+  
+  switch (cmd_in) {
+    case CMD_GREETING_REPLY:
+    case CMD_BYE_REPLY:
+    case CMD_STATUS_REPLY:
+    case CMD_SPEEDTEST_REPLY:
+      buff_out[0] = buff[1];            // src
+      buff_out[1] = NODE_GATEWAY_ID;    // dst
+      Serial.println(F("Send back to nodemcu"));      
+      sendToSoftwareSerial(cmd_in, buff_out);
+      timeout_volcano_time = millis();
+      waitingReply_volcano = false;
+      break;
+  }
+}
+#endif  /* if (THIS_NODE_ID == NODE_GATEWAY_ID) */
+

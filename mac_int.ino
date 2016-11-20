@@ -16,17 +16,19 @@
 #include <QueueArray.h>
 #include <util/crc16.h>
 
-#define TEST_TX_NODE
+//#define TEST_TX_NODE
 //#define TEST_RX_NODE
 #define DEBUG_MAC_TX
 #define DEBUG_MAC_RX
+
+#define NODE_ADDR         THIS_NODE_ID
 
 // maximum packets in MAC layer. if 1 frame is 263 bytes, then MAC can only hold that one frame
 #define MAX_PACKET 256
 #define MAX_FRAME MAC_LEN+MAX_PACKET // 5+MAX_PACKET+2
 #define ACK_FRAME MAC_LEN+1 // 5+1+2
 #define MAC_LEN 7 // 5+2
-#define MAX_QUEUE 5
+#define MAX_QUEUE 10
 #define HEADER 0xFF
 #define MAC_IDLE 0
 #define MAC_INIT_WAIT 1
@@ -221,6 +223,7 @@ void _mac_read_packet() {
           i++;
         } while(iter--);
         // send ACK
+        Serial.println(F("Send ACK"));
         _mac_create_ack(mac_ack_pdu, mac_pdu[1], mac_pdu[5]);
         phy_tx(mac_ack_pdu, ACK_FRAME);
       }
@@ -323,6 +326,7 @@ void _mac_wait_ack() {
     mac_wait_iter++;
     rx_ack_queue_iter--;
     if ( rx_ack_queue[rx_ack_queue_iter] == (addr ^ re_tx_addr ^ re_tx_buffer[0]) ) { // correct ACK is received
+      Serial.println(F("ACK"));
       is_ack_received = true;
       mac_state = MAC_IDLE;
       mac_wait_iter = 50; // get out of wait_ack loop
