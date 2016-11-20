@@ -16,8 +16,8 @@
 #include <QueueArray.h>
 #include <util/crc16.h>
 
-//#define TEST_TX_NODE
-#define TEST_RX_NODE
+#define TEST_TX_NODE
+//#define TEST_RX_NODE
 #define DEBUG_MAC_TX
 #define DEBUG_MAC_RX
 
@@ -43,7 +43,7 @@
 #define TX_FAIL 2
 #define MAX_RET 3
 #define MAC_CTRL_FREQ 50 // mac control every 10 ms
-#define MAX_TX_QUEUE 100
+#define MAX_TX_QUEUE 200
 
 // PUBLIC
 uint8_t mac_update(); // IMPORTANT: if MAC class is used in application, this needs to be called from loop(). Otherwise, state machine wont run
@@ -117,38 +117,7 @@ uint16_t rx_node_len;
 uint8_t rx_node_buffer[BUFFER_SIZE];
 #endif
 
-void setup() {
-  Serial.begin(115200);  
-#ifdef TEST_TX_NODE
-  randomSeed(analogRead(3));
-  tx_node_len = random(3, BUFFER_SIZE);
-  Serial.print(F("mac tx: "));
-  for (uint8_t i=0; i<tx_node_len; i++) { // generate bytes
-    tx_node_buffer[i] = random(255);
-    Serial.print(tx_node_buffer[i]);Serial.print(F(", "));
-  }
-  Serial.print(F("\r\n"));
-  mac_tx(tx_node_buffer, tx_node_len, DEST_ADDR);
-#endif
-#ifdef TEST_RX_NODE
-  Serial.print(F("mac rx: "));
-#endif
-  phy_initialize();
-  mac_initialize();
-}
 
-void loop() {
-  mac_update();
-#ifdef TEST_RX_NODE
-  rx_node_len = mac_rx(rx_node_buffer);
-  if (rx_node_len) {
-    for (uint8_t i=0; i<rx_node_len; i++) {
-      Serial.print(rx_node_buffer[i]);Serial.print(F(", "));
-    }
-    Serial.print(F("\r\n"));
-  }
-#endif
-}
 
 void mac_initialize() {
   addr = NODE_ADDR;
@@ -349,19 +318,19 @@ void _mac_access() {
 }
 
 void _mac_wait_ack() {
-  if ((mac_state == MAC_WAIT_ACK) && (mac_wait_iter<135)) { // wait 134 slots
+  if ((mac_state == MAC_WAIT_ACK) && (mac_wait_iter<50)) { // wait 134 slots
     _wait_cw_slot(1);
     mac_wait_iter++;
     rx_ack_queue_iter--;
     if ( rx_ack_queue[rx_ack_queue_iter] == (addr ^ re_tx_addr ^ re_tx_buffer[0]) ) { // correct ACK is received
       is_ack_received = true;
       mac_state = MAC_IDLE;
-      mac_wait_iter = 135; // get out of wait_ack loop
+      mac_wait_iter = 50; // get out of wait_ack loop
       memset(re_tx_buffer, 0, MAX_PACKET);
     }
   }
   
-  if ((mac_wait_iter==135) && (!is_ack_received)) { // failed to receive ACK, do retransmission
+  if ((mac_wait_iter==50) && (!is_ack_received)) { // failed to receive ACK, do retransmission
     mac_wait_iter=0;
     re_count++;
     mac_state = MAC_ACCESS;
