@@ -21,7 +21,7 @@
 #define CMD_BYE_REQUEST_LEN       2
 #define CMD_BYE_REPLY_LEN         2
 #define CMD_SPEEDTEST_REQUEST_LEN 2
-#define CMD_SPEEDTEST_REPLY_LEN   2
+#define CMD_SPEEDTEST_REPLY_LEN   4
 
 // FSM read software serial
 #define WAIT_HEADER   0
@@ -68,10 +68,16 @@ char dst_node_id = NODE_GATEWAY_ID;
 void mac_initialize();
 uint8_t mac_update();
 uint8_t mac_rx(uint8_t *data);
+bool isAckReceived();
 bool mac_tx(uint8_t *data, uint8_t data_len, uint8_t dest_addr);
 uint8_t rx_node_buffer_app[BUFFER_SIZE] = {0};
 uint8_t tx_node_buffer_app[BUFFER_SIZE] = {0};
 uint8_t tx_node_length;
+
+// Speedtest
+int16_t speed = 0;
+unsigned long time_speedtest_start = 0;
+unsigned long time_speedtest_end = 0;
 
 void setup() {
   // Open serial communications and wait for port to open:
@@ -230,6 +236,7 @@ void checkUpdateSoftwareSerial()
               Serial.print(tx_node_buffer_app[i]);Serial.print(F(", "));
           }
           Serial.print(F("\r\n"));
+          time_speedtest_start = micros();
           mac_tx(tx_node_buffer_app, tx_node_length, dst_node_id);
   
           waitingReply_volcano = true;  // waiting for reply from destination node
@@ -258,13 +265,22 @@ void checkCommVolcano()
       Serial.print(rx_node_buffer_app[i]);Serial.print(F(", "));
     }
     Serial.print(F("\r\n"));
-    handleRxCommand(rx_node_buffer_app, rx_node_length);
+//    handleRxCommand(rx_node_buffer_app, rx_node_length);
 
 #if (THIS_NODE_ID == NODE_GATEWAY_ID)
     timeout_volcano_time = millis();
-//    handleRxCommandSS(rx_node_buffer_app, rx_node_length);
 #endif  /* if (THIS_NODE_ID == NODE_GATEWAY_ID) */  
   }
+
+  // Check for ACK
+#if (THIS_NODE_ID == NODE_GATEWAY_ID)
+  if(isAckReceived())
+  {
+    time_speedtest_end = micros();
+    Serial.println(F("[App] ACK Received"));
+    handleRxCommandSS();
+  }
+#endif  /* if (THIS_NODE_ID == NODE_GATEWAY_ID) */  
 
 #if (THIS_NODE_ID == NODE_GATEWAY_ID)
   // Check for communication timeout on VLC comm
@@ -321,26 +337,42 @@ void handleRxCommand(char *buff, int len)
 }
 
 #if (THIS_NODE_ID == NODE_GATEWAY_ID)
-void handleRxCommandSS(char *buff, int len)
+void handleRxCommandSS()
 {
   // Command message
-  unsigned char cmd_in = buff[0];
   int cmd_len;
   char buff_out[5];
+  char cmd_out;
+  int16_t speed_out;
   
   switch (cmd_in) {
-    case CMD_GREETING_REPLY:
-    case CMD_BYE_REPLY:
-    case CMD_STATUS_REPLY:
-    case CMD_SPEEDTEST_REPLY:
-      buff_out[0] = buff[1];            // src
-      buff_out[1] = NODE_GATEWAY_ID;    // dst
-      Serial.println(F("Send back to nodemcu"));      
-      sendToSoftwareSerial(cmd_in, buff_out);
-      timeout_volcano_time = millis();
-      waitingReply_volcano = false;
+    case CMD_GREETING_REQUEST:
+      cmd_out = CMD_GREETING_REPLY;
       break;
+    case CMD_BYE_REQUEST:
+      cmd_out = CMD_BYE_REPLY;
+      break;
+    case CMD_STATUS_REQUEST:
+      cmd_out = CMD_STATUS_REPLY;
+      break;
+    case CMD_SPEEDTEST_REQUEST:
+      cmd_out = CMD_SPEEDTEST_REPLY;
+      // Calculate speed (send byte = data_len + command_len + header + footer + ack_len)
+      speed_out = (int32_t(cmdToLen(CMD_SPEEDTEST_REQUEST)+1+7+8)*8*2000000)/((time_speedtest_end - time_speedtest_start)-400);
+      Serial.print(F("Speed (bps):"));
+      Serial.println(speed_out, DEC);
+      buff_out[2] = (speed_out >> 8) & 0xFF;
+      buff_out[3] = speed_out & 0xFF;
+      break;
+    default:
+      return;
   }
+  buff_out[0] = dst_node_id;   // src
+  buff_out[1] = src_node_id;  // dst
+  Serial.println(F("Send back to nodemcu"));      
+  sendToSoftwareSerial(cmd_out, buff_out);
+  timeout_volcano_time = millis();
+  waitingReply_volcano = false;
 }
 #endif  /* if (THIS_NODE_ID == NODE_GATEWAY_ID) */
 

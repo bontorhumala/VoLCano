@@ -51,6 +51,7 @@
 uint8_t mac_update(); // IMPORTANT: if MAC class is used in application, this needs to be called from loop(). Otherwise, state machine wont run
 uint8_t mac_rx(uint8_t *data);
 bool mac_tx(uint8_t *data, uint8_t data_len, uint8_t dest_addr);
+bool isAckReceived();
 
 // dev_phy_analog
 bool phy_sense();
@@ -85,6 +86,7 @@ uint16_t re_tx_data_len; // retransmission length backup
 uint8_t re_tx_addr; // retransmission address backup
 uint8_t re_count;
 bool is_ack_received;
+bool is_ack_available;
 Timer t; //instantiate the timer object
 
 uint16_t _calculate_fcs(uint8_t* data, uint8_t count);
@@ -118,13 +120,14 @@ uint8_t tx_node_buffer[BUFFER_SIZE];
 uint16_t rx_node_len;
 uint8_t rx_node_buffer[BUFFER_SIZE];
 #endif
-
+unsigned long profiling_start, profiling_end;
 
 
 void mac_initialize() {
   addr = NODE_ADDR;
   mac_state = MAC_IDLE;
   random_cw = 0;
+  is_ack_available = false;
   t.every(MAC_CTRL_FREQ, _mac_fsm_control);
 }
 
@@ -199,6 +202,7 @@ void _mac_fsm_control() {
 // read packet from PHY layer, can be ACK or data
 // drop new packet if old packet still exists
 void _mac_read_packet() {
+  profiling_start = micros();
   uint8_t mac_pdu[MAX_FRAME];
   uint8_t mac_ack_pdu[ACK_FRAME];
   uint16_t data_len = 0;
@@ -226,6 +230,9 @@ void _mac_read_packet() {
         Serial.println(F("Send ACK"));
         _mac_create_ack(mac_ack_pdu, mac_pdu[1], mac_pdu[5]);
         phy_tx(mac_ack_pdu, ACK_FRAME);
+        profiling_end = micros();
+        Serial.print("AckTime=");
+        Serial.println(profiling_end - profiling_start); 
       }
     }
   }
@@ -327,6 +334,7 @@ void _mac_wait_ack() {
     rx_ack_queue_iter--;
     if ( rx_ack_queue[rx_ack_queue_iter] == (addr ^ re_tx_addr ^ re_tx_buffer[0]) ) { // correct ACK is received
       Serial.println(F("ACK"));
+      is_ack_available = true;
       is_ack_received = true;
       mac_state = MAC_IDLE;
       mac_wait_iter = 50; // get out of wait_ack loop
@@ -410,5 +418,16 @@ uint16_t _calculate_fcs(uint8_t* data, uint8_t count)
     ++data;
     --count;
   }
+  return result;
+}
+
+bool isAckReceived()
+{
+  bool result;
+
+  result = is_ack_available;
+  if(is_ack_available) {
+    is_ack_available = false;
+  } 
   return result;
 }
